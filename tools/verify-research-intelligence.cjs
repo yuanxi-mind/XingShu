@@ -58,6 +58,17 @@ async function launch() {
           if (count === 0) message = call('inspect_code_changes', {});
           else if (count === 1) message = call('read_research_file', { reference: globalThis.__qaApproval.workspaceRef + '/train.py' });
           else message = call('submit_implementation_review', { passed: true, summary: '逐条核对清单，只有train.py目标返回值改变。', checks: [{ stepIndex: 0, passed: true, evidence: '实际文件返回x+1；尚未证明实验效果。', files: ['train.py'] }] });
+        } else if (globalThis.__qaMemoryMode) {
+          const seen = body.messages.filter(m => m.role === 'tool').map(m => JSON.parse(m.content));
+          if (globalThis.__qaMemoryMode === 'submit') {
+            if (!seen.length) message = call('recall_experiment_memory', { pendingOnly: true });
+            else if (seen.length === 1 && seen[0].pendingSubmissions?.length === 1 && mode === 'private') message = call('submit_experiment_memory_source', { bundleId: seen[0].pendingSubmissions[0] });
+            else message = { content: seen.at(-1)?.submitted ? '模拟：已提交我获授权的回执' : '模拟：本会话没有权限提交' };
+          } else if (!seen.length) message = call('recall_experiment_memory', { query: '跨伙伴回执' });
+          else {
+            globalThis.__qaMemoryResult = seen[0];
+            const card = seen[0].cards?.[0]; message = { content: card?.comparable ? `模拟：已重新核验，差值 ${card.delta.toFixed(4)}` : '模拟：重新核验后证据不足' };
+          }
         } else message = { content: '隔离测试回复。' };
       }
       return new Response(JSON.stringify({ choices: [{ message }], usage: { prompt_tokens: 100, completion_tokens: 20 } }), { headers: { 'content-type': 'application/json' } });
@@ -72,6 +83,77 @@ function results(project, b, offset = 0) {
   const runs = b.plan.seeds.map((seed, i) => { const d = path.join(directory, 'seed-' + seed); fs.mkdirSync(d); const log = 'MOCK SERVER ONLY seed=' + seed; const metric = (b.plan.metricName === 'FPR' ? 6 : 89) + i + offset; const metrics = JSON.stringify({ [b.plan.metricName]: metric }); fs.writeFileSync(path.join(d, 'train.log'), log); fs.writeFileSync(path.join(d, 'metrics.json'), metrics); return { seed, exitCode: 0, metric, log: `results/seed-${seed}/train.log`, logHash: sha(log), metrics: `results/seed-${seed}/metrics.json`, metricsHash: sha(metrics) }; });
   const file = path.join(directory, 'bundle-results.json'); fs.writeFileSync(file, JSON.stringify({ runner: 'xingshu-experiment-v1', bundleId: b.id, codeHash: b.codeHash, manifestHash: b.manifestHash, plan: b.plan, status: 'completed', runs })); return file;
 }
+const memory = id => page.evaluate(id => window.cth.apiCollabExperimentMemory(id), id);
+async function verifyExperimentMemory(project, other, baselineBundle, candidate) {
+  const [first, second] = await page.evaluate(async ({ id, candidate }) => {
+    const make = seeds => window.cth.apiCollabExperimentPrepare(id, candidate.proposalId, { ...candidate.plan, seeds });
+    return [await make([1]), await make([2, 3])];
+  }, { id: project.id, candidate });
+  for (const [bundle, offset] of [[first, 0.5], [second, 1.5]]) {
+    const file = results(project, bundle, offset); await app.evaluate((_e, file) => globalThis.__qaDialogs.push({ canceled: false, filePaths: [file] }), file);
+    await page.evaluate(async ({ projectId, bundleId }) => {
+      if (!await window.cth.apiCollabExperimentImport(projectId, bundleId)) throw new Error('fixture import was cancelled');
+      await window.cth.apiCollabExperimentConfirm(projectId, bundleId, true);
+    }, { projectId: project.id, bundleId: bundle.id });
+  }
+  await button('可复现实验').click(); await button('刷新实验包').click();
+  const section = page.locator('.rt-memory'); await section.locator(':scope > summary').click();
+  const details = name => section.getByText(name, { exact: true });
+  await details('新建对照卡').click();
+  await section.getByLabel('卡片名称', { exact: true }).fill('跨伙伴回执 · 测试组');
+  await section.getByLabel('记忆对照包', { exact: true }).selectOption(baselineBundle.id);
+  await section.getByLabel('记忆候选包', { exact: true }).selectOption(first.id);
+  await button('建立对照卡').click(); await section.getByText('证据不足', { exact: true }).waitFor();
+  check('新建卡默认仅本人，缺少实验回执时不给差值', (await memory(project.id)).cards[0].audience.scope === 'owner' && !Object.hasOwn((await memory(project.id)).cards[0], 'delta'));
+  await section.getByLabel('卡片可见范围', { exact: true }).selectOption('project'); await details('新建对照卡').click();
+  await details('登记或指派回执').click();
+  const register = async (bundle, audience, delegate) => {
+    await section.getByLabel('已确认实验回执', { exact: true }).selectOption(bundle.id);
+    await section.getByLabel('新回执可见范围', { exact: true }).selectOption(audience);
+    await section.getByLabel('由谁提交', { exact: true }).selectOption(delegate || '');
+    await button(delegate ? '授权该伙伴提交' : '登记到推导记忆').click();
+    await waitFor(async () => (await memory(project.id)).sources.some(s => s.bundleId === bundle.id));
+  };
+  await register(baselineBundle, 'project'); await register(first, 'project', 'a'); await register(second, 'agent:a', 'b');
+  await details('登记或指派回执').click();
+  const setMode = mode => app.evaluate((_e, mode) => { globalThis.__qaMemoryMode = mode; }, mode);
+  const whisper = agentId => page.evaluate(({ projectId, agentId }) => window.cth.apiCollabSendPrivate({ projectId, agentId, content: '验收提交我授权给你的回执' }), { projectId: project.id, agentId });
+  await setMode('submit'); assert.match((await whisper('a')).content, /已提交/u);
+  check('甲已提交，乙尚未提交，继续显示缺种子并隐藏差值', (await memory(project.id)).cards[0].issues.includes('缺少候选 seed 2'));
+  assert.match((await whisper('b')).content, /已提交/u);
+  await button('重新核验记忆').click(); await section.getByText('候选 − 对照：+0.5 个百分点', { exact: true }).waitFor();
+  check('两位伙伴补齐分批回执，桌面计算跨包差值0.5个百分点', (await memory(project.id)).sources.filter(s => s.delegateTo && s.submittedAt).length === 2);
+  const groupRecall = async () => {
+    await setMode('recall');
+    const projectId = project.id;
+    const sent = await page.evaluate(projectId => window.cth.apiCollabSendWorkgroup({ projectId, content: '@a 验收：重新核验实验推导记忆' }), projectId);
+    await page.evaluate(projectId => window.cth.apiCollabRunCycle(projectId), projectId);
+    return waitFor(async () => (await page.evaluate(projectId => window.cth.apiCollabSnapshot(projectId), projectId)).workgroup.find(m => m.inReplyTo === sent.id && m.senderId === 'a'));
+  };
+  assert.match((await groupRecall()).content, /证据不足/u);
+  const limited = await app.evaluate(() => globalThis.__qaMemoryResult);
+  check('真实群聊工具按授权重算，私聊回执连ID也不会外露', limited.cards[0].comparable === false && !JSON.stringify(limited).includes(second.id) && !limited.pendingSubmissions.length);
+  await section.getByText(/^查看逐种子结果与来源/u).click(); await section.getByText('种子 1：对照 89 → 候选 89.5', { exact: false }).waitFor();
+  check('差值可回查逐种子分数、提交者和原回执校验值', (await memory(project.id)).cards[0].evidence.every(e => e.receiptHash.length === 64) && await section.getByText(/检查员乙 提交/u).isVisible());
+  await resize(760, 700); await noOverflow('760宽度的实验记忆与来源不溢出');
+  await resize(1440, 960); await section.locator(':scope > summary').scrollIntoViewIfNeeded(); await shot('08-experiment-memory-comparable');
+  await section.getByText(/^已登记回执（/u).click();
+  await section.getByLabel('查看回执', { exact: true }).selectOption(second.id);
+  await section.getByLabel('该回执可见范围', { exact: true }).selectOption('project');
+  await waitFor(async () => (await memory(project.id)).sources.find(s => s.bundleId === second.id)?.audience.scope === 'project');
+  check('公开明确授权后，群聊才能引用计算结果', /0.5000/u.test((await groupRecall()).content));
+  await button('撤回这份回执').click(); await button('确认撤回回执').click(); await section.getByText('证据不足', { exact: true }).waitFor();
+  const after = await memory(project.id);
+  const receipt = path.join(project.root, 'runs/experiment-bundles', second.id, 'receipts', 'bundle-results.json');
+  const olderComparison = await page.evaluate(({ projectId, baselineId, candidateId }) => window.cth.apiCollabExperimentCompare(projectId, baselineId, candidateId), { projectId: project.id, baselineId: baselineBundle.id, candidateId: candidate.id });
+  check('撤回只让依赖卡片失去差值，原回执与无关两包比较保留', !Object.hasOwn(after.cards[0], 'delta') && after.sources.find(s => s.bundleId === second.id)?.withdrawnAt && fs.existsSync(receipt) && olderComparison.comparable);
+  assert.match((await groupRecall()).content, /证据不足/u);
+  await section.locator(':scope > summary').scrollIntoViewIfNeeded(); await shot('09-experiment-memory-withdrawn');
+  check('新项目没有继承旧对照卡和回执', !(await memory(other.id)).cards.length && !(await memory(other.id)).sources.length);
+  await close(); await launch(); await open(project); const restored = await memory(project.id);
+  check('完整重启后，卡片、指派与撤回记录保留', restored.sources.length === 3 && !restored.cards[0].comparable && restored.sources.find(s => s.bundleId === second.id)?.withdrawnAt === after.sources.find(s => s.bundleId === second.id)?.withdrawnAt);
+}
+
 (async () => {
   try {
     await launch();
@@ -180,6 +262,7 @@ function results(project, b, offset = 0) {
     await button('可复现实验').click(); await button('核验反例检验卡').click();
     await page.getByRole('region', { name: '反例检验卡', exact: true }).getByText('未达到预登记判据', { exact: true }).waitFor();
     check('重启后可从既有回执重新核验同一张反例卡');
+    await verifyExperimentMemory(project, other, baselineBundle, candidate);
     check('前端运行异常为0', !report.rendererErrors.length);
     if (process.env.XINGSHU_CAPTURE_SCREENSHOTS === '1') await require('./capture-screenshots.cjs').capture({ app, page, project }); report.finishedAt = new Date().toISOString(); await close(); fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify({ output, checks: report.checks.length, rendererErrors: report.rendererErrors, asarSha256: report.asarSha256 }, null, 2));
   } catch (error) { if (page) { console.error(await page.locator('body').innerText({ timeout: 3000 }).catch(() => 'No DOM')); await shot('failure').catch(() => {}); } throw error; }

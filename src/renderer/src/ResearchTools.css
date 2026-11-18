@@ -77,3 +77,16 @@
 .rt-claim-results [data-status] { font-weight: 650; }
 .rt-claim-results small span { display: block; font-variant-numeric: tabular-nums; }
 @media(max-width:800px) { .rt-claim-results { grid-template-columns: minmax(0,1fr); } }
+
+.rt-memory > summary { cursor: pointer; }
+.rt-memory > summary small { margin: 3px 0 0 16px; }
+.rt-memory > .rt-hint { margin-top: 14px; }
+.rt-memory > .rw-details, .rt-memory > .rt-error, .rt-memory > .rt-notice { margin-top: 14px; }
+.rt-memory .rw-details form, .rt-memory .rw-details > label { margin-top: 12px; }
+.rt-memory .rw-details form > label { margin-bottom: 12px; }
+.rt-memory .rt-bundle { overflow-wrap: anywhere; }
+.rt-memory .rt-result-heading { margin-bottom: 5px; }
+.rt-memory-issues, .rt-memory-evidence { padding-inline-start: 23px; overflow-wrap: anywhere; }
+.rt-memory-issues { list-style: disc; }
+.rt-memory-evidence { list-style: decimal; }
+.rt-memory-evidence li { margin-bottom: 6px; }

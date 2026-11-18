@@ -49,3 +49,28 @@ export interface ClaimCheck {
 }
 export interface ExperimentClaimResult { id: string; status: ClaimCheck['status']; overall: ClaimCheck; stress: ClaimCheck }
 export interface ExperimentSnapshot { server: ResearchServer | null; bundles: ExperimentBundle[]; claims: ExperimentClaim[] }
+
+export type ExperimentMemoryAudience = { scope: 'owner' | 'project' } | { scope: 'agent'; agentId: string };
+export type ExperimentMemoryAction =
+  | { type: 'create'; title: string; baselineId: string; candidateId: string; seeds: number[]; audience: ExperimentMemoryAudience }
+  | { type: 'audience'; cardId: string; audience: ExperimentMemoryAudience }
+  | { type: 'source'; bundleId: string; audience: ExperimentMemoryAudience; delegateTo?: string }
+  | { type: 'sourceAudience'; bundleId: string; audience: ExperimentMemoryAudience }
+  | { type: 'withdraw'; bundleId: string };
+export interface ExperimentMemorySource {
+  bundleId: string;
+  seeds: number[];
+  audience: ExperimentMemoryAudience;
+  delegateTo?: string;
+  submittedAt?: string;
+  withdrawnAt?: string;
+}
+export interface ExperimentMemoryView {
+  id: string; title: string; audience: ExperimentMemoryAudience;
+  baselineVersionId: string; baselineCodeHash: string; candidateCodeHash: string; historical: boolean;
+  dataset: string; split: string; metricName: string; metricUnit: NonNullable<ExperimentPlan['metricUnit']>;
+  seeds: number[]; comparable: boolean; issues: string[]; delta?: number;
+  pairs: Array<{ seed: number; baseline: number; candidate: number; baselineSources: string[]; candidateSources: string[] }>;
+  evidence: Array<{ bundleId: string; receiptHash: string; contributor?: string }>;
+}
+export interface ExperimentMemorySnapshot { cards: ExperimentMemoryView[]; sources: ExperimentMemorySource[] }

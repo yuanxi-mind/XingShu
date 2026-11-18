@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { agentApiMode, type ProjectSnapshot } from '@shared/apiCollab';
 import type { ResearchState } from '@shared/research';
 import { BENCHMARK_TASKS, type BenchmarkInput, type BenchmarkRun, type BenchmarkSnapshot } from '@shared/researchBenchmark';
-import type { EvidenceGraph, ExperimentBundle, ExperimentClaimInput, ExperimentClaimPair, ExperimentClaimResult, ExperimentPlan, ExperimentSnapshot, ResearchMemoryHit, ResearchServer } from '@shared/researchIntelligence';
+import type { EvidenceGraph, ExperimentBundle, ExperimentClaimInput, ExperimentClaimPair, ExperimentClaimResult, ExperimentMemoryAction, ExperimentMemoryAudience, ExperimentMemorySnapshot, ExperimentPlan, ExperimentSnapshot, ResearchMemoryHit, ResearchServer } from '@shared/researchIntelligence';
 import type { ContinuationInfo } from '../../main/researchJournal';
 import { AgentAvatar } from './AgentAvatar';
 import { IconButton } from './NextChat';
@@ -94,6 +94,7 @@ export function ExperimentPanel({ projectId, snapshot, open, research, refreshRe
     const created = await window.cth.apiCollabExperimentPrepare(projectId, proposal, { ...plan, args: args as string[], seeds: seeds.split(/[,，\s]+/u).filter(Boolean).map(Number) }); setSelected(created.id);
   };
   return <section className="rt-panel" hidden={!open} aria-label="可复现实验"><header className="rw-section-heading"><div><span className="rw-eyebrow">同一份代码，同一组运行条件</span><h3>可复现实验</h3><p>生成实验包 → 手动运行或批准服务器提交 → 核验结果 → 人工确认。Agent不能自行提交训练。</p></div><IconButton text="刷新实验包" icon="reload" bordered disabled={f.busy} onClick={() => void f.work(load)} /></header>{f.feedback}
+    {state && <ExperimentMemory projectId={projectId} snapshot={snapshot} experiments={state} research={research} open={open} />}
     {state && <InnovationClaims key={projectId} projectId={projectId} state={state} research={research} reload={load} />}
     <form className="rt-form" onSubmit={e => { e.preventDefault(); act(prepare, '实验包已生成。可以定位压缩包上传服务器，或配置下方SSH连接。'); }}><h4>准备代码与运行条件</h4><label>要运行的代码<select aria-label="要运行的代码" value={proposal} onChange={e => setProposal(e.target.value)}><option value="__baseline__">当前公共版本（用于baseline对照）</option>{research?.proposals.filter(p => p.approval && p.reviews.at(-1)?.passed && !p.publishedVersionId).map(p => <option key={p.id} value={p.id}>已核查方案 · {p.title}</option>)}</select></label><div className="rt-fields"><label>训练入口<input value={plan.entrypoint} onChange={e => patch({ entrypoint: e.target.value })} /></label><label>依赖文件<input value={plan.dependencyFile} onChange={e => patch({ dependencyFile: e.target.value })} /></label><label>数据集名称<input value={plan.dataset} onChange={e => patch({ dataset: e.target.value })} required /></label><label>划分标识<input value={plan.split} onChange={e => patch({ split: e.target.value })} placeholder="例如：official-test" required /></label><label>划分清单文件（代码内，可选）<input value={plan.splitManifest ?? ''} onChange={e => patch({ splitManifest: e.target.value })} placeholder="如splits/test.txt；对照核验需要" /></label><label>实验 seed<input value={seeds} onChange={e => setSeeds(e.target.value)} placeholder="1,2,3" /></label></div><label>训练参数（JSON数组，不执行shell拼接）<textarea rows={2} value={argumentsText} onChange={e => setArgumentsText(e.target.value)} placeholder={'["--config","configs/cd.yaml"]'} /></label><label>服务器预装镜像的完整 digest<input value={plan.image} onChange={e => patch({ image: e.target.value })} placeholder="你的镜像@sha256:64位校验值" required /></label><p className="rt-hint">服务器需有Linux、Python3、Docker及已安装依赖的指定镜像。容器禁止联网，只读挂载数据集到/datasets；本功能不会自动安装依赖。</p><details className="rw-details"><summary>指标格式与资源上限</summary><div className="rt-fields"><label>指标JSON文件<input value={plan.metricPath} onChange={e => patch({ metricPath: e.target.value })} /></label><label>指标键名<input value={plan.metricName} onChange={e => patch({ metricName: e.target.value })} /></label><label>指标单位<select value={plan.metricUnit ?? 'percent'} onChange={e => patch({ metricUnit: e.target.value as ExperimentPlan['metricUnit'] })}><option value="percent">百分数（0–100）</option><option value="fraction">比例（0–1）</option><option value="number">其他数值</option></select></label><label>seed参数（可留空）<input value={plan.seedFlag} onChange={e => patch({ seedFlag: e.target.value })} /></label>{([{ key: 'timeoutSeconds', name: '每seed最长秒数' }, { key: 'cpus', name: 'CPU核数' }, { key: 'memoryGb', name: '内存上限GB' }] as const).map(x => <label key={x.key}>{x.name}<input type="number" min={1} value={plan[x.key]} onChange={e => patch({ [x.key]: Number(e.target.value) })} /></label>)}<label>GPU编号（不用请留空）<input value={plan.gpuDevices} onChange={e => patch({ gpuDevices: e.target.value })} /></label></div><p className="rt-hint">训练程序须将数值指标写入工作目录中的JSON，如 {JSON.stringify({ [plan.metricName || 'F1']: 90.5 })}。包中保留完整代码、依赖文件和运行清单，请检查代码内是否有私人内容。</p></details><div className="rt-actions"><IconButton text="生成可复现实验包" buttonType="submit" type="primary" className="rw-primary" disabled={f.busy || !research?.currentVersionId} /></div></form>
     <details className="rt-server"><summary>服务器连接（可选；不配置也能导出实验包）</summary><p className="rt-hint">仅使用D盘SSH私钥；主机指纹需向服务器管理员核实。连接与私钥不向Agent开放。仅此项目保存连接，不继承到新项目。</p><div className="rt-fields">{([{ key: 'host', name: 'SSH主机' }, { key: 'username', name: '非root用户名' }, { key: 'hostFingerprint', name: '已核实的主机SHA256指纹' }, { key: 'remoteRoot', name: '服务器实验根目录' }, { key: 'datasetRoot', name: '服务器数据集目录（只读挂载）' }] as const).map(x => <label key={x.key}>{x.name}<input value={server[x.key]} onChange={e => setServer({ ...server, [x.key]: e.target.value })} /></label>)}<label>SSH端口<input type="number" value={server.port} onChange={e => setServer({ ...server, port: Number(e.target.value) })} /></label></div><label>本机D盘私钥<input value={server.identityFile} readOnly /></label><div className="rt-actions"><IconButton text="选择D盘私钥" bordered onClick={() => void f.work(async () => { const key = await window.cth.apiCollabExperimentChooseKey(projectId); if (key) setServer({ ...server, identityFile: key }); })} /><IconButton text="保存服务器连接" bordered disabled={f.busy} onClick={() => act(() => window.cth.apiCollabExperimentSaveServer(projectId, server), '服务器连接已保存，尚未提交训练。')} /><IconButton text="核验指纹并测试连接" bordered disabled={f.busy || !state?.server} onClick={() => act(async () => { const message = await window.cth.apiCollabExperimentVerifyServer(projectId); if (!message) throw new Error('没有连接回执'); }, '主机指纹、Python和Docker检查通过；没有提交训练。')} /></div></details>
@@ -109,6 +110,103 @@ const emptyClaimPair = (): ExperimentClaimPair => ({ baselineId: '', candidateId
 const emptyClaim = (): ExperimentClaimInput => ({ hypothesis: '', overall: emptyClaimPair(), stress: emptyClaimPair() });
 const claimNumber = new Intl.NumberFormat('zh-CN', { maximumSignificantDigits: 6 });
 const claimLabels = { met: '两项达到预登记判据', 'not-met': '未达到预登记判据', insufficient: '还缺可比证据' };
+
+const ownerOnly: ExperimentMemoryAudience = { scope: 'owner' };
+function MemoryAudienceSelect({ label, value, onChange, agents, disabled }: {
+  label: string; value: ExperimentMemoryAudience; onChange(value: ExperimentMemoryAudience): void; agents: ProjectSnapshot['agents']; disabled?: boolean;
+}) {
+  const selected = value.scope === 'agent' ? 'agent:' + value.agentId : value.scope;
+  return <label>{label}<select aria-label={label} value={selected} disabled={disabled} onChange={e => {
+    const key = e.target.value;
+    onChange(key === 'owner' || key === 'project' ? { scope: key } : { scope: 'agent', agentId: key.slice(6) });
+  }}><option value="owner">仅我可见</option><option value="project">本项目公开（群聊可引用）</option>
+    {value.scope === 'agent' && !agents.some(a => a.id === value.agentId) && <option value={selected}>原伙伴不可用</option>}
+    {agents.map(a => <option key={a.id} value={'agent:' + a.id}>仅我与 {a.displayName} 的私聊</option>)}
+  </select></label>;
+}
+
+function ExperimentMemory({ projectId, snapshot, experiments, research, open }: ToolProps & {
+  experiments: ExperimentSnapshot; research: ResearchState | null;
+}) {
+  const [state, setState] = useState<ExperimentMemorySnapshot | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [title, setTitle] = useState(''); const [baseline, setBaseline] = useState(''); const [candidate, setCandidate] = useState('');
+  const [seeds, setSeeds] = useState(''); const [cardAudience, setCardAudience] = useState(ownerOnly);
+  const [bundle, setBundle] = useState(''); const [delegate, setDelegate] = useState(''); const [sourceAudience, setSourceAudience] = useState(ownerOnly);
+  const [cardId, setCardId] = useState(''); const [sourceId, setSourceId] = useState(''); const [withdrawal, setWithdrawal] = useState('');
+  const f = useFeedback();
+  const load = async (action?: ExperimentMemoryAction): Promise<ExperimentMemorySnapshot> => {
+    const memory = await window.cth.apiCollabExperimentMemory(projectId, action); setState(memory); return memory;
+  };
+  useEffect(() => { if (open && expanded) void f.work(() => load()); }, [open, expanded, projectId]);
+  const act = (action: ExperimentMemoryAction, notice: string, after?: (memory: ExperimentMemorySnapshot) => void): void => {
+    void f.work(async () => { const memory = await load(action); after?.(memory); }, notice);
+  };
+  const agents = snapshot.agents;
+  const delegates = agents.filter(a => a.enabled && agentApiMode(a.model ?? snapshot.providers.find(p => p.id === a.providerId)?.defaultModel ?? '', a.apiMode) !== 'image');
+  const agentName = (id: string): string => agents.find(a => a.id === id)?.displayName ?? id;
+  const baselineLabel = (b: ExperimentBundle): string => research?.versions.find(v => v.id === b.proposalId.slice(9))?.name ?? '公共对照';
+  const bundleLabel = (b: ExperimentBundle): string => `${b.proposalId.startsWith('baseline:') ? baselineLabel(b) : research?.proposals.find(p => p.id === b.proposalId)?.title ?? '候选方案'} · ${b.plan.dataset} / ${b.plan.split} · 种子 ${b.plan.seeds.join(', ')} · ${date(b.createdAt)}`;
+  const labelFor = (id: string): string => {
+    const b = experiments.bundles.find(b => b.id === id); return b ? bundleLabel(b) : id;
+  };
+  const baselines = experiments.bundles.filter(b => b.proposalId.startsWith('baseline:'));
+  const candidates = experiments.bundles.filter(b => !b.proposalId.startsWith('baseline:'));
+  const available = experiments.bundles.filter(b => b.confirmedAt && b.results?.complete && !state?.sources.some(s => s.bundleId === b.id));
+  const card = state?.cards.find(c => c.id === cardId) ?? state?.cards[0];
+  const source = state?.sources.find(s => s.bundleId === sourceId) ?? state?.sources[0];
+  return <details className="rt-form rt-memory" onToggle={e => setExpanded(e.currentTarget.open)}><summary><strong>实验推导记忆</strong><small>{state ? `${state.cards.length} 张对照卡 · ${state.cards.filter(c => c.comparable).length} 张可比较` : '把多份实验回执拼成可追溯的结论'}</small></summary>
+    <p className="rt-hint">先建对照卡，再登记同条件、已经人工确认的回执。每个随机种子须有对照和候选分数。这里是你的完整视图；Agent 只能用你授权给它的卡片和回执。</p>
+    <div className="rt-actions"><IconButton text="重新核验记忆" icon="reload" bordered disabled={f.busy} onClick={() => void f.work(() => load())} /></div>
+    {f.feedback}
+    {card ? <article className="rt-bundle" aria-label="当前记忆卡">
+      <label>查看对照卡<select aria-label="查看对照卡" value={card.id} onChange={e => setCardId(e.target.value)}>{state?.cards.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}</select></label>
+      <div className="rt-result-heading"><b>{card.title}</b><strong className="rw-status" data-status={card.comparable ? 'confirmed' : 'pending-confirmation'}>{card.comparable ? '可以比较' : '证据不足'}</strong></div>
+      <p>{card.dataset} / {card.split} · {card.metricName} · 随机种子 {card.seeds.join(', ')}{card.historical ? ' · 历史基线' : ''}</p>
+      {card.comparable && <p className="rt-notice">候选 − 对照：{card.delta! > 0 ? '+' : ''}{claimNumber.format(card.delta!)}{card.metricUnit === 'percent' ? ' 个百分点' : '（原指标单位）'}</p>}
+      {!!card.issues.length && <ul className="rt-memory-issues">{card.issues.map(issue => <li key={issue}>{issue}</li>)}</ul>}
+      <MemoryAudienceSelect label="卡片可见范围" value={card.audience} agents={agents} disabled={f.busy} onChange={audience => act({ type: 'audience', cardId: card.id, audience }, '卡片可见范围已更新。')} />
+      <details className="rw-details"><summary>查看逐种子结果与来源（{card.evidence.length} 份）</summary>
+        <small>基线版本：{research?.versions.find(v => v.id === card.baselineVersionId)?.name ?? card.baselineVersionId}</small>
+        <small>对照代码校验值：{card.baselineCodeHash}</small><small>候选代码校验值：{card.candidateCodeHash}</small>
+        <ol className="rt-memory-evidence">{card.evidence.map(e => <li key={e.bundleId}><b>{labelFor(e.bundleId)}</b><small>{e.bundleId} · {e.contributor ? agentName(e.contributor) + ' 提交' : '你直接登记'}</small><small>回执校验值：{e.receiptHash}</small></li>)}</ol>
+        {card.pairs.map(pair => <p key={pair.seed}>种子 {pair.seed}：对照 {claimNumber.format(pair.baseline)} → 候选 {claimNumber.format(pair.candidate)}<small>来源：对照 {pair.baselineSources.map(id => card.evidence.findIndex(e => e.bundleId === id) + 1).join('、')}；候选 {pair.candidateSources.map(id => card.evidence.findIndex(e => e.bundleId === id) + 1).join('、')}</small></p>)}
+        <p className="rt-hint">差值是逐种子差值的均值。计算不代表统计显著，也不替代实验复跑。</p>
+      </details>
+    </article> : <p className="rt-empty">还没有对照卡。准备好同条件的公共对照包和候选包后，就能指定要比的种子。</p>}
+    <details className="rw-details"><summary>新建对照卡</summary>
+      <form onSubmit={e => { e.preventDefault(); act({ type: 'create', title, baselineId: baseline, candidateId: candidate, seeds: seeds.split(/[,，\s]+/u).filter(Boolean).map(Number), audience: cardAudience }, '对照卡已建立。', memory => { setCardId(memory.cards[0]?.id ?? ''); setTitle(''); setCardAudience(ownerOnly); }); }}>
+        <label>卡片名称<input value={title} onChange={e => setTitle(e.target.value)} required maxLength={120} placeholder="例如：跨季节 F1 对照" /></label>
+        <div className="rt-fields">
+          <label>记忆对照包<select aria-label="记忆对照包" value={baseline} onChange={e => { setBaseline(e.target.value); if (!seeds) setSeeds(baselines.find(b => b.id === e.target.value)?.plan.seeds.join(', ') ?? ''); }} required><option value="">请选择公共对照包</option>{baselines.map(b => <option key={b.id} value={b.id}>{bundleLabel(b)}</option>)}</select></label>
+          <label>记忆候选包<select aria-label="记忆候选包" value={candidate} onChange={e => setCandidate(e.target.value)} required><option value="">请选择候选包</option>{candidates.map(b => <option key={b.id} value={b.id}>{bundleLabel(b)}</option>)}</select></label>
+          <label>要比较的随机种子<input value={seeds} onChange={e => setSeeds(e.target.value)} placeholder="例如：1, 2, 3" required /></label>
+          <MemoryAudienceSelect label="新卡片可见范围" value={cardAudience} onChange={setCardAudience} agents={agents} />
+        </div>
+        <p className="rt-hint">选包用于锁定代码和运行条件。各个包可以分批覆盖 2–20 个种子，不必在同一包里跑完。</p>
+        <IconButton text="建立对照卡" buttonType="submit" type="primary" className="rw-primary" disabled={f.busy || !baselines.length || !candidates.length} />
+      </form>
+    </details>
+    <details className="rw-details"><summary>登记或指派回执</summary>
+      <form onSubmit={e => { e.preventDefault(); act({ type: 'source', bundleId: bundle, audience: sourceAudience, ...(delegate ? { delegateTo: delegate } : {}) }, delegate ? '已指派。请到该伙伴的私聊说「提交我授权给你的实验回执」。' : '回执已登记，已重新计算。', () => { setSourceId(bundle); setBundle(''); setDelegate(''); setSourceAudience(ownerOnly); }); }}>
+        <div className="rt-fields">
+          <label>已确认实验回执<select aria-label="已确认实验回执" value={bundle} onChange={e => setBundle(e.target.value)} required><option value="">{available.length ? '请选择回执' : '目前没有可登记的完整回执'}</option>{available.map(b => <option key={b.id} value={b.id}>{bundleLabel(b)}</option>)}</select></label>
+          <label>由谁提交<select aria-label="由谁提交" value={delegate} onChange={e => setDelegate(e.target.value)}><option value="">我直接登记</option>{delegates.map(a => <option key={a.id} value={a.id}>{a.displayName}（私聊提交）</option>)}</select></label>
+          <MemoryAudienceSelect label="新回执可见范围" value={sourceAudience} onChange={setSourceAudience} agents={agents} />
+        </div>
+        <IconButton text={delegate ? '授权该伙伴提交' : '登记到推导记忆'} buttonType="submit" bordered disabled={f.busy || !bundle} />
+      </form>
+    </details>
+    {source && <details className="rw-details"><summary>已登记回执（{state?.sources.length}）</summary>
+      <label>查看回执<select aria-label="查看回执" value={source.bundleId} onChange={e => { setSourceId(e.target.value); setWithdrawal(''); }}>{state?.sources.map(s => <option key={s.bundleId} value={s.bundleId}>{s.withdrawnAt ? '已撤回' : s.submittedAt ? '已提交' : '待提交'} · {labelFor(s.bundleId)}</option>)}</select></label>
+      <p className="rt-hint">{source.withdrawnAt ? '已撤回，不再参与推导。原回执保留；更正请核验并登记新的回执。' : `${source.submittedAt ? '已提交' : '待私聊提交'}${source.delegateTo ? ` · ${agentName(source.delegateTo)}` : ''} · 随机种子 ${source.seeds.join(', ')}`}</p>
+      {!source.withdrawnAt && <>
+        <MemoryAudienceSelect label="该回执可见范围" value={source.audience} agents={agents} disabled={f.busy} onChange={audience => act({ type: 'sourceAudience', bundleId: source.bundleId, audience }, '回执可见范围已更新。')} />
+        {withdrawal === source.bundleId ? <div className="rt-confirm"><p>撤回后，缺少该证据的结论会变为「证据不足」。原始回执保留。</p><div className="rt-actions"><IconButton text="取消撤回" bordered onClick={() => setWithdrawal('')} /><IconButton text="确认撤回回执" type="danger" bordered disabled={f.busy} onClick={() => act({ type: 'withdraw', bundleId: source.bundleId }, '回执已撤回，受影响的结论已重新核验。', () => setWithdrawal(''))} /></div></div> : <div className="rt-actions"><IconButton text="撤回这份回执" bordered disabled={f.busy} onClick={() => setWithdrawal(source.bundleId)} /></div>}
+      </>}
+    </details>}
+  </details>;
+}
 
 function InnovationClaims({ projectId, state, research, reload }: {
   projectId: string; state: ExperimentSnapshot; research: ResearchState | null; reload(): Promise<void>;

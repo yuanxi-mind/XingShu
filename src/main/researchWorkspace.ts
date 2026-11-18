@@ -98,9 +98,9 @@ export class ResearchWorkspaceStore {
   }
   private save(state: ResearchState): void { atomic(safe(this.root, this.stateRef, true), state); }
   private audit(action: string, value: unknown): void { appendFileSync(safe(this.root, 'runs/research/audit.jsonl', true), `${JSON.stringify({ at: now(), action, value })}\n`, 'utf8'); }
-  private agent(agentId: string): void { if (typeof agentId !== 'string' || !/^[a-zA-Z0-9_-]+$/u.test(agentId) || !this.agentIds().includes(agentId)) throw new Error('请选择本项目中存在的 Agent'); }
+  assertAgent(agentId: string): void { if (typeof agentId !== 'string' || !/^[a-zA-Z0-9_-]+$/u.test(agentId) || !this.agentIds().includes(agentId)) throw new Error('请选择本项目中存在的 Agent'); }
   initializeAgent(agentId: string): void {
-    this.agent(agentId);
+    this.assertAgent(agentId);
     for (const box of ['materials', 'hypotheses', 'facts']) {
       const dir = safe(this.root, `AgentChats/${agentId}/boxes/${box}/.keep`, true);
       if (!existsSync(dir)) writeFileSync(dir, '', { flag: 'wx' });
@@ -135,7 +135,7 @@ export class ResearchWorkspaceStore {
     state.versions.push(version); state.currentVersionId = version.id; this.save(state); this.audit('import-baseline', { versionId, files: Object.keys(manifest).length }); return version;
   }
   saveProposal(agentId: string, input: ResearchProposalInput): ResearchProposal {
-    this.agent(agentId); this.initializeAgent(agentId);
+    this.assertAgent(agentId); this.initializeAgent(agentId);
     const clean: ResearchProposalInput = {
       title: text(input.title, '方案名', 150), summary: text(input.summary, '方案说明'),
       steps: Array.isArray(input.steps) ? input.steps.map(step => text(step, '实施步骤', 4000)) : [],
@@ -173,7 +173,7 @@ export class ResearchWorkspaceStore {
     state.sharedProposals.push(share); this.save(state); this.audit('human-share-proposal', { proposalId, shareId: share.id }); return share;
   }
   approveProposal(proposalId: string, implementerId: string, reviewerId: string): ResearchApproval {
-    this.agent(implementerId); this.agent(reviewerId);
+    this.assertAgent(implementerId); this.assertAgent(reviewerId);
     if (implementerId === reviewerId) throw new Error('修改代码与核查代码必须选择不同的 Agent');
     const state = this.snapshot(); this.idle(state, proposalId, implementerId); const p = this.proposal(state, proposalId);
     if (p.approval) throw new Error('此方案已采纳；继续修改会沿用原工作副本，不会重置已改代码。要换分工请建立新方案');
@@ -203,7 +203,7 @@ export class ResearchWorkspaceStore {
     p.implementationHash = this.codeHash(proposalId); p.implementationSummary = text(summary, '修改说明'); p.status = 'implemented'; p.updatedAt = now(); this.save(state);
   }
   saveReview(proposalId: string, reviewerId: string, input: { passed: boolean; summary: string; checks: ResearchReviewCheck[] }): ResearchReview {
-    this.agent(reviewerId);
+    this.assertAgent(reviewerId);
     const state = this.snapshot(); const p = this.proposal(state, proposalId); const approval = p.approval;
     if (!approval || approval.reviewerId !== reviewerId || approval.implementerId === reviewerId) throw new Error('当前 Agent 没有此方案的核查授权');
     const codeHash = this.codeHash(proposalId);
@@ -262,7 +262,7 @@ export class ResearchWorkspaceStore {
     this.save(state); this.audit('human-confirm-experiment', { proposalId, experimentId, codeHash: experiment.codeHash });
   }
   publish(proposalId: string, publisherId: string, summary: string): ResearchVersion {
-    this.agent(publisherId); const state = this.snapshot(); const p = this.proposal(state, proposalId); const approval = p.approval;
+    this.assertAgent(publisherId); const state = this.snapshot(); const p = this.proposal(state, proposalId); const approval = p.approval;
     if (!approval) throw new Error('此方案尚未采纳');
     if (p.publishedVersionId) return this.version(state, p.publishedVersionId);
     const exp = p.experiments.at(-1); const review = p.reviews.at(-1); const current = this.version(state);
@@ -296,7 +296,7 @@ export class ResearchWorkspaceStore {
     this.assertVersion(version); this.audit('prepare-human-authorized-publication', { proposalId, publisherId, versionId }); this.save(state); return version;
   }
   beginRun(action: ResearchRun['action'], agentId: string, instruction: string, proposalId?: string): ResearchRun {
-    this.agent(agentId); const state = this.snapshot(); this.idle(state, proposalId, agentId);
+    this.assertAgent(agentId); const state = this.snapshot(); this.idle(state, proposalId, agentId);
     if (action === 'propose') this.version(state);
     else {
       const p = this.proposal(state, proposalId ?? ''); const a = p.approval;
@@ -319,7 +319,7 @@ export class ResearchWorkspaceStore {
   resumeRun(runId: string): ResearchRun {
     const state = this.snapshot(); const run = state.runs.find(r => r.id === runId);
     if (!run || !['failed', 'interrupted'].includes(run.status)) throw new Error('只可续跑失败或中断的任务');
-    this.agent(run.agentId); this.idle(state, run.proposalId, run.agentId);
+    this.assertAgent(run.agentId); this.idle(state, run.proposalId, run.agentId);
     run.status = 'running'; run.error = undefined; run.finishedAt = undefined;
     run.receipts.push({ tool: 'human_resume', ok: true, summary: '用户确认续跑；恢复上下文，不自动重放已完成工具。', at: now() }); this.save(state); return run;
   }
@@ -328,7 +328,7 @@ export class ResearchWorkspaceStore {
     run.status = 'interrupted'; run.error = reason; run.finishedAt = now(); this.save(state); return run;
   }
   archiveSource(agentId: string, runId: string, data: unknown): string {
-    this.agent(agentId); const ref = `AgentChats/${agentId}/boxes/materials/sources/${runId}-${randomUUID()}.json`;
+    this.assertAgent(agentId); const ref = `AgentChats/${agentId}/boxes/materials/sources/${runId}-${randomUUID()}.json`;
     atomic(safe(this.root, ref, true), { retrievedAt: now(), data }); return ref;
   }
   files(box: 'public' | 'materials' | 'hypotheses' | 'facts', agentId?: string, versionId?: string): ResearchFile[] {
@@ -337,7 +337,7 @@ export class ResearchWorkspaceStore {
       if (!state.currentVersionId) return [];
       const v = this.version(state, versionId); rootRef = normalized(dirname(v.codeRef));
     } else {
-      this.agent(agentId ?? ''); if (!['materials', 'hypotheses', 'facts'].includes(box)) throw new Error('资料盒不存在');
+      this.assertAgent(agentId ?? ''); if (!['materials', 'hypotheses', 'facts'].includes(box)) throw new Error('资料盒不存在');
       rootRef = `AgentChats/${agentId}/boxes/${box}`;
     }
     const root = safe(this.root, rootRef); if (!existsSync(root)) return [];
@@ -353,7 +353,7 @@ export class ResearchWorkspaceStore {
     return files;
   }
   private allowed(access: ResearchAccess, reference: string): string {
-    this.agent(access.agentId); const ref = segments(reference).join('/'); const state = this.snapshot();
+    this.assertAgent(access.agentId); const ref = segments(reference).join('/'); const state = this.snapshot();
     const isPublic = state.versions.some(v => ref.startsWith(`${normalized(dirname(v.codeRef))}/`)) || state.sharedProposals.some(s => ref === `WorkGroup/research/shared-proposals/${s.id}.md` || (ref.startsWith(`WorkGroup/research/shared-proposals/${s.id}/evidence/`) && s.evidence.some(e => e.reference === ref)));
     let permitted = isPublic;
     if (['private', 'propose', 'implement'].includes(access.mode)) permitted ||= ref.startsWith(`AgentChats/${access.agentId}/boxes/`) || ref.startsWith(`AgentChats/${access.agentId}/data/`);
@@ -368,7 +368,7 @@ export class ResearchWorkspaceStore {
     return ref;
   }
   modelFiles(access: ResearchAccess, box: string): ResearchFile[] {
-    this.agent(access.agentId);
+    this.assertAgent(access.agentId);
     if (box === 'workspace') {
       const p = this.proposal(this.snapshot(), access.proposalId ?? '');
       if (!p.approval || !['implement', 'review', 'publish'].includes(access.mode)) throw new Error('当前任务没有工作副本授权');
@@ -404,7 +404,7 @@ export class ResearchWorkspaceStore {
     return { reference: ref, text: raw.slice(offset, offset + 30_000), hash: hash(readFileSync(file)), ...(offset + 30_000 < raw.length ? { nextOffset: offset + 30_000 } : {}) };
   }
   edit(access: ResearchAccess, input: { path: string; operation: 'replace' | 'create' | 'delete'; oldText?: string; newText?: string; expectedHash?: string }): { reference: string; before?: string; after?: string } {
-    this.agent(access.agentId);
+    this.assertAgent(access.agentId);
     if (access.mode !== 'implement') throw new Error('当前不是已授权的代码修改任务');
     const state = this.snapshot(); const p = this.proposal(state, access.proposalId ?? ''); const a = p.approval;
     if (!a || a.implementerId !== access.agentId || p.publishedVersionId || state.runs.some(r => r.status === 'running' && r.proposalId === p.id && r.action !== 'implement')) throw new Error('当前没有这份代码的修改权限');
@@ -436,7 +436,7 @@ export class ResearchWorkspaceStore {
     this.audit('scoped-code-edit', { proposalId: p.id, agentId: access.agentId, ref, operation: input.operation, before, after }); return { reference: ref, before, after };
   }
   context(agentId: string, privateChat: boolean): string {
-    this.agent(agentId); const state = this.snapshot(); if (!state.currentVersionId) return '\n科研资料盒：尚未导入 baseline。不能声称已读代码或论文。';
+    this.assertAgent(agentId); const state = this.snapshot(); if (!state.currentVersionId) return '\n科研资料盒：尚未导入 baseline。不能声称已读代码或论文。';
     const v = this.version(state); this.assertVersion(v);
     const publicInfo = { currentVersion: { id: v.id, name: v.name, codeRef: v.codeRef, documentsRef: v.documentsRef, digest: v.digest }, publishedResults: state.versions.filter(v => v.kind !== 'baseline').map(v => ({ id: v.id, name: v.name, kind: v.kind, summary: v.summary, evidenceRef: v.evidenceRef })), authorizedMeetingProposals: state.sharedProposals };
     const own = privateChat ? state.proposals.filter(p => p.agentId === agentId || p.approval?.implementerId === agentId).map(p => ({ id: p.id, title: p.title, status: p.status, approval: p.approval, latestExperiment: p.experiments.at(-1) })) : undefined;

@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import type { ResearchChange, ResearchExperimentInput, ResearchFile, ResearchPreview, ResearchRun, ResearchRunInput, ResearchState } from '../shared/research';
 import type { BenchmarkInput, BenchmarkRun, BenchmarkSnapshot } from '../shared/researchBenchmark';
-import type { EvidenceGraph, ExperimentBundle, ExperimentClaim, ExperimentClaimInput, ExperimentClaimResult, ExperimentPlan, ExperimentSnapshot, ResearchMemoryHit, ResearchServer } from '../shared/researchIntelligence';
+import type { EvidenceGraph, ExperimentBundle, ExperimentClaim, ExperimentClaimInput, ExperimentClaimResult, ExperimentMemoryAction, ExperimentMemorySnapshot, ExperimentPlan, ExperimentSnapshot, ResearchMemoryHit, ResearchServer } from '../shared/researchIntelligence';
 import type { ContinuationInfo } from '../main/researchJournal';
 import type { AgentProvider } from '../shared/agentProvider';
 import type { HireManifest } from '../shared/hire';
@@ -695,6 +695,7 @@ const api = {
   apiCollabResearchResume: (projectId: string, id: string, consent: boolean): Promise<ResearchRun[]> => ipcRenderer.invoke('apiCollab:researchResume', projectId, id, consent),
   apiCollabResearchPause: (projectId: string, id: string): Promise<void> => ipcRenderer.invoke('apiCollab:researchPause', projectId, id),
   apiCollabExperimentSnapshot: (projectId: string): Promise<ExperimentSnapshot> => ipcRenderer.invoke('apiCollab:experimentSnapshot', projectId),
+  apiCollabExperimentMemory: (projectId: string, action?: ExperimentMemoryAction): Promise<ExperimentMemorySnapshot> => ipcRenderer.invoke('apiCollab:experimentMemory', projectId, action),
   apiCollabExperimentPrepare: (projectId: string, id: string, plan: ExperimentPlan): Promise<ExperimentBundle> => ipcRenderer.invoke('apiCollab:experimentPrepare', projectId, id, plan),
   apiCollabExperimentSaveServer: (projectId: string, server: ResearchServer): Promise<void> => ipcRenderer.invoke('apiCollab:experimentSaveServer', projectId, server),
   apiCollabExperimentVerifyServer: (projectId: string): Promise<string> => ipcRenderer.invoke('apiCollab:experimentVerifyServer', projectId),

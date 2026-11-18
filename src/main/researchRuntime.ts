@@ -7,6 +7,7 @@ import { runResearchProvider } from './researchProvider';
 import { readResearchSource, searchCode, searchResearch } from './researchSources';
 import { ResearchMemory } from './researchMemory';
 import { ResearchJournal } from './researchJournal';
+import type { ResearchExperiments } from './researchExperiments';
 
 const str = { type: 'string' };
 const tool = (name: string, description: string, properties: Record<string, unknown>, required: string[] = []): ResearchTool => ({ type: 'function', function: { name, description, parameters: { type: 'object', properties, required, additionalProperties: false } } });
@@ -15,6 +16,8 @@ const READ_TOOLS = [
   tool('read_research_file', '按项目相对 reference 分段读取真实文件。PDF/DOCX 提取文字；图片发送给当前模型。禁止读取他人私人空间。', { reference: str, offset: { type: 'integer', minimum: 0 } }, ['reference']),
   tool('search_project_memory', '在本项目已授权的记忆中检索方案和已确认观察。返回版本、数据集和历史适用状态；旧事实不能直接用于新版，用户确认不等于独立复跑。不会检索他人私人盒。', { query: str }, ['query'])
 ];
+const RECALL_EXPERIMENT_TOOL = tool('recall_experiment_memory', '重查已授权的跨实验包对照。只在 comparable 为 true 时引用 delta；historical 为 true 表示对应旧基线。查询可用标题、指标、数据集、划分或卡片ID。提交回执前用 pendingOnly:true，只查你在当前私聊获授权的待提交回执ID。', { query: str, pendingOnly: { type: 'boolean' } });
+const SUBMIT_EXPERIMENT_RECEIPT_TOOL = tool('submit_experiment_memory_source', '只登记用户已核验并指派给你的实验包回执。仅私聊可用；不能更改指标、确认实验、修改可见范围或触发训练。', { bundleId: str }, ['bundleId']);
 const SOURCE_TOOLS = [
   tool('search_recent_papers', '通过 Crossref 检索近六个月的论文元数据。元数据不是已读论文；检索不保证收录完整或质量排名。需要继续获取全文。', { query: str }, ['query']),
   tool('search_code_repositories', '通过 GitHub 官方 API 查找相关公开代码仓库。更新时间不等于论文发表时间，星数不等于方法质量。', { query: str }, ['query']),
@@ -36,6 +39,7 @@ const PUBLISH_TOOL = tool('publish_confirmed_version', '用户本轮已明确授
 interface Options {
   projectId: string;
   store: ResearchWorkspaceStore;
+  experiments?: ResearchExperiments;
   agents(): ApiAgentConfig[];
   providers(): ProviderConfig[];
   apiKey(provider: ProviderConfig): string | undefined;
@@ -103,7 +107,14 @@ export class ResearchRuntime {
     return this.converse(agent, { agentId: agent.id, mode: privateChat ? 'private' : 'group' }, prompt, undefined, extraSystem, onDelta, extraTools, executeExtra, images);
   }
   private async converse(agent: ApiAgentConfig, access: ResearchAccess, prompt: string, run?: ResearchRun, extraSystem = '', onDelta?: (content: string) => void, extraTools: ResearchTool[] = [], executeExtra?: (name: string, args: Record<string, unknown>) => Promise<unknown>, images: Array<{ name: string; url: string }> = [], resume = false): Promise<string> {
-    const { store } = this.options;
+    const { store, experiments } = this.options;
+    const memoryActor = { agentId: access.agentId, privateChat: access.mode === 'private' };
+    const memoryReads = new Map<string, string>();
+    const verifyMemoryReads = (): void => {
+      for (const [query, observed] of memoryReads) {
+        if (JSON.stringify(experiments?.recallExperimentMemory(memoryActor, query).cards) !== observed) throw new Error('实验记忆的证据或授权已变化，请重新查询后再引用。');
+      }
+    };
     const provider = this.options.providers().find(p => p.id === agent.providerId)!;
     const privateAnalysis = ['private', 'propose'].includes(access.mode);
     const proposal = run?.proposalId ? store.snapshot().proposals.find(p => p.id === run.proposalId) : undefined;
@@ -116,6 +127,7 @@ export class ResearchRuntime {
     const configurationHash = ResearchJournal.configuration(agent, provider);
     const observe = (name: string, args: Record<string, unknown>, raw: unknown): void => {
       if (!raw || typeof raw !== 'object') return; const r = raw as Record<string, any>; if (r.ok === false) return;
+      if (name === 'recall_experiment_memory' && args.pendingOnly !== true && Array.isArray(r.cards) && r.cards.length) memoryReads.set(typeof args.query === 'string' ? args.query : '', JSON.stringify(r.cards));
       if (name === 'read_research_file' && typeof r.reference === 'string' && typeof r.text === 'string') {
         evidenceRefs.add(r.reference); const offset = Number(args.offset ?? 0);
         excerpts.set(r.reference, [...(excerpts.get(r.reference) ?? []), { text: r.text, hash: r.hash, offset }]);
@@ -129,6 +141,7 @@ export class ResearchRuntime {
       if (name === 'publish_confirmed_version' && r.version) { terminal = true; terminalSummary = `${r.version.name}\n${r.version.summary}\n公共目录：${r.version.codeRef}；旧版保留。`; }
     };
     const tools = [...READ_TOOLS,
+      ...(experiments ? [RECALL_EXPERIMENT_TOOL, ...(memoryActor.privateChat ? [SUBMIT_EXPERIMENT_RECEIPT_TOOL] : [])] : []),
       ...(privateAnalysis ? [...SOURCE_TOOLS, PROPOSAL_TOOL] : []),
       ...(access.mode === 'implement' ? [DIFF_TOOL, EDIT_TOOL, FINISH_TOOL] : []),
       ...(access.mode === 'review' ? [DIFF_TOOL, REVIEW_TOOL] : []),
@@ -140,6 +153,7 @@ export class ResearchRuntime {
       '只陈述真实工具回执支持的操作。未经读取不能说读懂；未经执行不能说跑过；模型检查不能保证实验有效或消除全部幻觉。',
       '项目公共版本对 Agent 只读；各自私人盒默认不共享。开会只讨论用户逐份授权的方案快照。',
       '创新是待验证猜想，不能写为事实。必须区分 baseline 文件、论文元数据、已取全文、推理假设、实际代码修改和用户确认的实验观察。',
+      experiments ? '引用实验记忆结论前，用 recall_experiment_memory 重新核验，不把旧聊天当作有效证据。若证据不足，报告缺项，不用零散结果计算总体改善。若用户请你提交已授权回执，先用 pendingOnly:true 查询并提交；如还要比较，提交后再查询卡片。' : '',
       '可使用检索工具寻找近六个月论文和相关 GitHub 实现，但不保证检索完整，不按星数冒充科学质量。元数据不是全文；无法获得的论文细节如实注明。',
       '没有本机 shell、服务器执行权限，也不能自己批准实验或发布。修改后给用户服务器命令，由用户运行。PDF扫描件不含可提取文字时不得假装已读。',
       `当前权限：${access.mode}。工具最多 24 轮，读文件可用 offset 继续；不要无目的循环。`,
@@ -151,10 +165,11 @@ export class ResearchRuntime {
       store.context(agent.id, privateAnalysis || access.mode === 'implement'), extraSystem
     ].filter(Boolean).join('\n');
     let result: string;
-    try { result = await runResearchProvider({ provider, apiKey: this.options.apiKey(provider)!, agent, system, prompt: prompt || '按本轮授权执行，完成后如实报告。', tools, onDelta, images,
+    try { result = await runResearchProvider({ provider, apiKey: this.options.apiKey(provider)!, agent, system, prompt: prompt || '按本轮授权执行，完成后如实报告。', tools, onDelta: text => { if (!memoryReads.size || !text) onDelta?.(text); }, images, beforeRequest: verifyMemoryReads,
       signal: run ? this.controllers.get(run.id)?.signal : undefined, maxRounds: resume ? 32 : 24, stopWhen: () => Boolean(run && terminal),
       ...(journal ? { continuation: { state: resume ? journal.load(configurationHash) : undefined, save: state => journal.save(configurationHash, state), restoredTool: observe } } : {}),
       execute: async (name, args, callId) => {
+        verifyMemoryReads();
         const execute = async (): Promise<unknown> => {
         try {
           let result: unknown;
@@ -174,7 +189,11 @@ export class ResearchRuntime {
             }
             if (!preview.text.startsWith('[')) actualLocalRead.add(preview.reference);
           } else if (name === 'search_project_memory') result = new ResearchMemory(store).search(String(args.query), agent.id, privateAnalysis || access.mode === 'implement');
-          else if (['search_recent_papers', 'search_code_repositories', 'read_research_source'].includes(name)) {
+          else if (name === 'recall_experiment_memory' && experiments) result = experiments.recallExperimentMemory(memoryActor, args.query as string | undefined, args.pendingOnly === true);
+          else if (name === 'submit_experiment_memory_source' && experiments && memoryActor.privateChat) {
+            if (typeof args.bundleId !== 'string') throw new Error('请提供已授权实验包的 ID');
+            result = experiments.submitExperimentMemorySource(args.bundleId, memoryActor);
+          } else if (['search_recent_papers', 'search_code_repositories', 'read_research_source'].includes(name)) {
             const source = name === 'search_recent_papers' ? await searchResearch(String(args.query)) : name === 'search_code_repositories' ? await searchCode(String(args.query)) : await readResearchSource(String(args.url), args.offset === undefined ? undefined : Number(args.offset));
             const sourceRef = store.archiveSource(agent.id, run?.id ?? randomUUID(), source); evidenceRefs.add(sourceRef); result = { reference: sourceRef, ...source as object };
           } else if (name === 'save_private_proposal') {
@@ -225,6 +244,7 @@ export class ResearchRuntime {
         observe(name, args, result); return result;
       }
     }); } catch (error) { throw error; }
+    verifyMemoryReads();
     if (run && !terminal) throw new Error('模型只返回了文字，没有完成要求的工具登记；未将本次任务标记为完成');
     return run ? terminalSummary : `${result}${savedProposalId ? `\n\n系统回执：私人方案已保存（${savedProposalId}），未公开。` : ''}`;
   }

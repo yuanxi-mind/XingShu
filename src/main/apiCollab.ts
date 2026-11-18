@@ -337,7 +337,7 @@ export class ApiCollabManager {
   researchRuntime(projectId: string): ResearchRuntime {
     let runtime = this.researchRuntimes.get(projectId);
     if (runtime) return runtime;
-    runtime = new ResearchRuntime({ projectId, store: this.researchStore(projectId), agents: () => this.agents(), providers: () => this.providers(), apiKey: p => this.apiKey(p), message: m => { this.appendMessage(m); }, active: (id, delta) => {
+    runtime = new ResearchRuntime({ projectId, store: this.researchStore(projectId), experiments: this.researchExperiments(projectId), agents: () => this.agents(), providers: () => this.providers(), apiKey: p => this.apiKey(p), message: m => { this.appendMessage(m); }, active: (id, delta) => {
       const count = (this.activeAgentRequests.get(id) ?? 0) + delta;
       if (count > 0) this.activeAgentRequests.set(id, count); else this.activeAgentRequests.delete(id);
     } });

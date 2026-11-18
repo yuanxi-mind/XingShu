@@ -180,6 +180,146 @@ test('multi-seed import verifies every log/metric, stays unconfirmed, and compar
   assert.throws(() => m.importResult(baseline.id, 'bad'), /重复/);
   const changed = await m.prepare('__baseline__', { ...plan(), split: 'another-split' }); m.importResult(changed.id, fakeResults(f, changed)); m.confirm(changed.id, true); assert.equal(m.compare(changed.id, candidate.id).comparable, false);
 });
+test('derived memory combines independent seed receipts, tracks provenance, and only invalidates dependent cohorts', async () => {
+  const f = fixture(); const proposal = f.implement(); let manager = new ResearchExperiments(f.store);
+  const prepare = (p, seeds, split = 'official-test') => manager.prepare(p, { ...plan(), seeds, split });
+  const record = (b, offset = 0) => { manager.importResult(b.id, fakeResults(f, b, offset)); manager.confirm(b.id, true); return b; };
+  const left = record(await prepare('__baseline__', [1, 2]));
+  const right1 = record(await prepare(proposal.id, [1]), 1);
+  const right2 = record(await prepare(proposal.id, [2]), 3);
+  const left34 = record(await prepare('__baseline__', [3, 4]));
+  const right34 = record(await prepare(proposal.id, [3, 4]), 2);
+  const wrong = record(await prepare(proposal.id, [2], 'different-split'), 9);
+  const notYetConfirmed = await prepare(proposal.id, [2]);
+  manager.importResult(notYetConfirmed.id, fakeResults(f, notYetConfirmed));
+  const project = { scope: 'project' }; const owner = { scope: 'owner' };
+  const action = (type, bundle, attrs = {}) => manager.experimentMemory({ type, bundleId: bundle.id, ...attrs });
+  const create = (title, seeds, audience = project, candidate = right1) => manager.experimentMemory({ type: 'create', title, seeds, audience, baselineId: left.id, candidateId: candidate.id }).cards[0].id;
+  const view = id => manager.experimentMemory().cards.find(c => c.id === id);
+  const inspect = (agentId, privateChat, query = '') => manager.recallExperimentMemory({ agentId, privateChat }, query);
+  const find = (actor, query, id) => inspect(...actor, query).cards.find(c => c.id === id);
+  const absent = c => { assert.equal(c.comparable, false); assert(!Object.hasOwn(c, 'delta')); };
+  const publicId = create('跨参与者对照', [2, 1]);
+  const independent = create('同条件独立种子', [3, 4]);
+  const privateId = create('私人卡标题', [1, 2], { scope: 'agent', agentId: 'a' });
+  const ownerId = create('仅所有者卡标题', [1, 2], owner);
+  assert.throws(() => create('划分不匹配', [1, 2], project, wrong), /split不一致/);
+  assert.throws(() => action('source', notYetConfirmed, { audience: project }), /未确认/);
+  assert.throws(() => action('source', left, { audience: { scope: 'agent', agentId: 'outside-project' } }), /本项目/);
+  assert.throws(() => action('source', left, { audience: project, delegateTo: 'outside-project' }), /本项目/);
+  action('source', left, { audience: project });
+  action('source', wrong, { audience: project });
+  action('source', left34, { audience: project }); action('source', right34, { audience: project });
+  action('source', right1, { audience: project, delegateTo: 'a' });
+  action('source', right2, { audience: { scope: 'agent', agentId: 'a' }, delegateTo: 'b' });
+  const group = ['a', false]; const a = ['a', true]; const b = ['b', true];
+  assert.deepEqual(inspect(...b).pendingSubmissions, [right2.id]);
+  assert.deepEqual(inspect(...a).pendingSubmissions, [right1.id]);
+  assert.deepEqual(inspect(...group).pendingSubmissions, []);
+  assert.throws(() => manager.submitExperimentMemorySource(right2.id, { agentId: 'a', privateChat: true }), /没有/);
+  assert.throws(() => manager.submitExperimentMemorySource(right2.id, { agentId: 'b', privateChat: false }), /没有/);
+  assert.throws(() => action('source', right2, { audience: project }), /已登记/);
+  manager.submitExperimentMemorySource(right1.id, { agentId: 'a', privateChat: true });
+  assert(view(publicId).issues.includes('缺少候选 seed 2')); absent(view(publicId));
+  assert.equal(view(independent).delta, 2);
+  manager.submitExperimentMemorySource(right2.id, { agentId: 'b', privateChat: true });
+  const submittedAt = manager.experimentMemory().sources.find(s => s.bundleId === right2.id).submittedAt;
+  manager.submitExperimentMemorySource(right2.id, { agentId: 'b', privateChat: true });
+  assert.equal(manager.experimentMemory().sources.find(s => s.bundleId === right2.id).submittedAt, submittedAt);
+  const ownerView = view(publicId);
+  assert.equal(ownerView.delta, 1.5);
+  assert.deepEqual(ownerView.pairs.map(p => [p.seed, p.baseline, p.candidate]), [[1, 89, 90], [2, 90, 92]]);
+  assert.deepEqual(ownerView.evidence.map(e => e.contributor), [undefined, 'a', 'b']);
+  assert(ownerView.evidence.every(e => /^[a-f0-9]{64}$/.test(e.receiptHash)));
+  assert.equal(manager.compare(left.id, right1.id).comparable, false);
+  assert.equal(inspect(...a, '私人卡标题').cards[0].id, privateId);
+  assert.deepEqual(inspect(...group, '私人卡标题').cards, []);
+  assert.deepEqual(inspect(...b, '私人卡标题').cards, []);
+  assert.deepEqual(inspect(...a, ownerId).cards, []);
+  assert.equal(find(a, 'cd-fixture', publicId).delta, 1.5);
+  for (const actor of [group, b]) {
+    const c = find(actor, publicId, publicId); absent(c);
+    assert(!JSON.stringify(c).includes(right2.id));
+    assert(!JSON.stringify(c).includes(wrong.id));
+    assert(c.evidence.every(e => !Object.hasOwn(e, 'contributor')));
+  }
+  action('sourceAudience', right2, { audience: project });
+  assert.equal(find(group, publicId, publicId).delta, 1.5);
+  action('sourceAudience', right2, { audience: owner });
+  absent(find(group, publicId, publicId)); assert.equal(view(publicId).delta, 1.5);
+  const duplicate = record(await prepare(proposal.id, [2]), 3);
+  action('source', duplicate, { audience: project });
+  assert.deepEqual(view(publicId).pairs[1].candidateSources, [right2.id, duplicate.id]);
+  const conflict = record(await prepare(proposal.id, [2]), 4);
+  action('source', conflict, { audience: { scope: 'agent', agentId: 'a' } });
+  absent(view(publicId)); assert(view(publicId).issues.includes('候选 seed 2 有冲突指标'));
+  assert.equal(find(group, publicId, publicId).delta, 1.5);
+  action('withdraw', conflict); action('withdraw', duplicate);
+  assert.equal(view(publicId).delta, 1.5);
+  const copied = path.join(f.root, 'runs/experiment-bundles', right2.id, 'receipts/seed-2.log');
+  fs.appendFileSync(copied, 'changed');
+  assert(view(publicId).issues.some(issue => issue.includes(right2.id))); absent(view(publicId));
+  assert(!JSON.stringify(find(a, publicId, publicId)).includes(right2.id));
+  assert.equal(view(independent).delta, 2, '同实验条件但不同种子的卡不吃到损坏来源');
+  action('withdraw', right2);
+  assert(fs.existsSync(copied)); assert(view(publicId).issues.includes('缺少候选 seed 2'));
+  assert.throws(() => manager.submitExperimentMemorySource(right2.id, { agentId: 'b', privateChat: true }), /没有/);
+  const corrected = record(await prepare(proposal.id, [2]), 4);
+  action('source', corrected, { audience: project });
+  manager = new ResearchExperiments(new ResearchWorkspaceStore(f.root, () => ['a', 'b', 'c']));
+  assert.equal(view(publicId).delta, 2); assert.equal(view(independent).delta, 2);
+  assert.equal(view(publicId).pairs[1].candidateSources[0], corrected.id);
+  assert(manager.experimentMemory().sources.find(s => s.bundleId === right2.id).withdrawnAt);
+  const other = new ResearchExperiments(fixture().store);
+  assert.deepEqual(other.recallExperimentMemory({ agentId: 'a', privateChat: true }), { cards: [], pendingSubmissions: [] });
+  assert.deepEqual(other.experimentMemory(), { cards: [], sources: [] });
+});
+
+test('runtime uses trusted chat identity, prevents groups submitting, and discards a reply after mid-request revocation', async t => {
+  const f = fixture(); const proposal = f.implement(); const experiments = new ResearchExperiments(f.store);
+  const baseline = await experiments.prepare('__baseline__', { ...plan(), seeds: [1, 2] });
+  const candidate = await experiments.prepare(proposal.id, { ...plan(), seeds: [1, 2] });
+  for (const b of [baseline, candidate]) { experiments.importResult(b.id, fakeResults(f, b, b === baseline ? 0 : 0.5)); experiments.confirm(b.id, true); }
+  const audience = { scope: 'project' };
+  experiments.experimentMemory({ type: 'create', title: '撤权测试', seeds: [1, 2], audience, baselineId: baseline.id, candidateId: candidate.id });
+  experiments.experimentMemory({ type: 'source', bundleId: baseline.id, audience });
+  experiments.experimentMemory({ type: 'source', bundleId: candidate.id, audience, delegateTo: 'a' });
+  const { ResearchRuntime } = load('src/main/researchRuntime.ts'); const second = { ...agent, id: 'b' };
+  const runtime = new ResearchRuntime({ projectId: 'fixture', store: f.store, experiments, ...deps(), agents: () => [agent, second], active: () => {}, message: () => {} });
+  const mock = t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const body = JSON.parse(init.body); const seen = body.messages.filter(m => m.role === 'tool');
+    const group = body.messages[0].content.includes('当前权限：group');
+    assert.equal(body.tools.some(t => t.function.name === 'submit_experiment_memory_source'), !group);
+    if (!seen.length) return reply({ tool_calls: [call('submit-1', 'submit_experiment_memory_source', { bundleId: candidate.id, agentId: 'a', privateChat: true })] });
+    const result = JSON.parse(seen[0].content);
+    assert.equal(Boolean(result.submitted), false); return reply({ content: '未提交' });
+  });
+  await assert.rejects(runtime.chat(agent, '测试群聊提交', false), /未知|授权/u);
+  assert.equal(await runtime.chat(second, '测试身份冒用', true), '未提交');
+  assert(!experiments.experimentMemory().sources.find(s => s.bundleId === candidate.id).submittedAt);
+  mock.mock.mockImplementation(async (_url, init) => {
+    const body = JSON.parse(init.body); const seen = body.messages.filter(m => m.role === 'tool');
+    if (!seen.length) return reply({ tool_calls: [call('pending', 'recall_experiment_memory', { pendingOnly: true })] });
+    if (seen.length === 1) {
+      const { pendingSubmissions } = JSON.parse(seen[0].content); assert.deepEqual(pendingSubmissions, [candidate.id]);
+      return reply({ tool_calls: [call('submission', 'submit_experiment_memory_source', { bundleId: pendingSubmissions[0] })] });
+    }
+    assert.equal(JSON.parse(seen[1].content).submitted, true); return reply({ content: '已提交授权回执' });
+  });
+  assert.equal(await runtime.chat(agent, '登记回执', true), '已提交授权回执');
+  const deltas = [];
+  mock.mock.mockImplementation(async (_url, init) => {
+    const seen = JSON.parse(init.body).messages.filter(m => m.role === 'tool');
+    if (!seen.length) return reply({ tool_calls: [call('memory', 'recall_experiment_memory', { query: '撤权测试' })] });
+    assert.equal(JSON.parse(seen[0].content).cards[0].delta, 0.5);
+    experiments.experimentMemory({ type: 'sourceAudience', bundleId: candidate.id, audience: { scope: 'owner' } });
+    return new Response('data: {"choices":[{"delta":{"content":"旧差值 0.5"}}]}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  });
+  await assert.rejects(runtime.chat(agent, '比较已授权的结果', false, '', msg => deltas.push(msg)), /证据或授权已变化/);
+  assert(deltas.every(content => !content));
+  assert(!experiments.recallExperimentMemory({ agentId: 'a', privateChat: false }).cards[0].comparable);
+});
+
 test('result tampering and partial failures cannot become a complete success', async () => {
   const f = fixture(); const p = f.implement(); const m = new ResearchExperiments(f.store); const b = await m.prepare(p.id, plan()); const file = fakeResults(f, b, 0, true); const result = m.importResult(b.id, file);
   assert.equal(result.results.complete, false); assert.equal(f.store.snapshot().proposals.find(q => q.id === p.id).experiments[0].outcome, 'failure');

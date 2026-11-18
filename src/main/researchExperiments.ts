@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
-import type { ClaimCheck, ExperimentBundle, ExperimentClaim, ExperimentClaimInput, ExperimentClaimPair, ExperimentClaimResult, ExperimentPlan, ExperimentSnapshot, LockedClaimPair, ResearchServer } from '../shared/researchIntelligence';
+import type { ClaimCheck, ExperimentBundle, ExperimentClaim, ExperimentClaimInput, ExperimentClaimPair, ExperimentClaimResult, ExperimentMemoryAction, ExperimentMemoryAudience, ExperimentMemorySnapshot, ExperimentMemorySource, ExperimentMemoryView, ExperimentPlan, ExperimentSnapshot, LockedClaimPair, ResearchServer } from '../shared/researchIntelligence';
 import { EXPERIMENT_RUNNER } from './experimentRunner';
 import { ResearchWorkspaceStore, researchAtomicJson as atomic, researchCopyTree as copy, researchFileManifest as manifest, researchManifestHash as digest, researchSafePath as safe } from './researchWorkspace';
 import { ResearchSshTransport } from './researchSsh';
@@ -28,14 +28,24 @@ export function validateExperimentPlan(p: ExperimentPlan): ExperimentPlan {
   if (p.metricUnit && !['percent', 'fraction', 'number'].includes(p.metricUnit)) throw new Error('指标单位无效');
   return { ...p, metricUnit: p.metricUnit ?? 'percent', args: [...p.args], seeds: [...p.seeds], entrypoint: relativeFile(p.entrypoint, '训练入口'), dependencyFile: relativeFile(p.dependencyFile, '依赖文件'), metricPath: relativeFile(p.metricPath, '指标文件'), ...(p.splitManifest ? { splitManifest: relativeFile(p.splitManifest, '划分清单') } : {}) };
 }
-function configurationDifferences(a: ExperimentBundle, b: ExperimentBundle): string[] {
+const conditionFields = ['dataset', 'split', 'seedFlag', 'image', 'metricName', 'metricUnit', 'metricPath', 'entrypoint', 'args', 'dependencyFile', 'splitManifest', 'timeoutSeconds', 'cpus', 'memoryGb', 'gpuDevices'] as const;
+function configurationDifferences(a: ExperimentBundle, b: ExperimentBundle, checkSeeds = true): string[] {
   const reasons: string[] = [];
   if (!a.splitHash || a.splitHash !== b.splitHash) reasons.push('缺少相同的划分清单哈希');
   if (!a.dependencyHash || a.dependencyHash !== b.dependencyHash) reasons.push('依赖文件哈希不一致');
-  for (const field of ['dataset', 'split', 'seeds', 'seedFlag', 'image', 'metricName', 'metricUnit', 'metricPath', 'entrypoint', 'args', 'dependencyFile', 'splitManifest', 'timeoutSeconds', 'cpus', 'memoryGb', 'gpuDevices'] as const) if (JSON.stringify(a.plan[field]) !== JSON.stringify(b.plan[field])) reasons.push(`${field}不一致`);
+  for (const field of conditionFields) if (JSON.stringify(a.plan[field]) !== JSON.stringify(b.plan[field])) reasons.push(field + '不一致');
+  if (checkSeeds && JSON.stringify(a.plan.seeds) !== JSON.stringify(b.plan.seeds)) reasons.push('seeds不一致');
   return reasons;
 }
 const claimBundleHash = (b: ExperimentBundle): string => sha(JSON.stringify([b.id, b.proposalId, b.codeHash, b.manifestHash, b.archiveHash, b.dependencyHash, b.splitHash, b.plan]));
+// Each package is a shard; its own seed list does not specify the comparison's cohort.
+const memoryArm = (b: ExperimentBundle): string => sha(JSON.stringify([b.proposalId, b.codeHash, b.splitHash, b.dependencyHash, ...conditionFields.map(f => b.plan[f])]));
+const receiptFingerprint = (b: ExperimentBundle): string => sha(claimBundleHash(b) + ':' + b.receiptHash);
+type MemoryActor = { agentId: string; privateChat: boolean };
+const memoryAllowed = (audience: ExperimentMemoryAudience, actor: MemoryActor): boolean => audience.scope === 'project' || (audience.scope === 'agent' && actor.privateChat && audience.agentId === actor.agentId);
+type MemoryCard = Omit<ExperimentMemoryView, 'historical' | 'comparable' | 'issues' | 'delta' | 'pairs' | 'evidence'> & { baselineKey: string; candidateKey: string };
+type MemorySource = ExperimentMemorySource & { arm: string; fingerprint: string; receiptHash: string };
+interface MemoryState { cards: MemoryCard[]; sources: MemorySource[] }
 function tarHeader(name: string, size: number): Buffer {
   const header = Buffer.alloc(512); let leaf = name; let prefix = '';
   if (Buffer.byteLength(name) > 100) { const cut = name.lastIndexOf('/'); prefix = name.slice(0, cut); leaf = name.slice(cut + 1); }
@@ -184,6 +194,133 @@ export class ResearchExperiments {
     }
     reasons.push(...configurationDifferences(a, b));
     return { comparable: reasons.length === 0, reasons, ...(reasons.length === 0 ? { delta: b.results!.mean - a.results!.mean } : {}) };
+  }
+  private memoryState(): MemoryState {
+    const file = safe(this.store.root, 'runs/experiment-memory.json');
+    if (!existsSync(file)) return { cards: [], sources: [] };
+    const state = JSON.parse(readFileSync(file, 'utf8')) as MemoryState;
+    if (!state || !Array.isArray(state.cards) || !Array.isArray(state.sources)) throw new Error('推导记忆索引损坏');
+    return state;
+  }
+  private saveMemory(state: MemoryState): void { atomic(safe(this.store.root, 'runs/experiment-memory.json', true), state); }
+  private memoryAudience(value: ExperimentMemoryAudience): ExperimentMemoryAudience {
+    if (value?.scope === 'owner' || value?.scope === 'project') return { scope: value.scope };
+    if (value?.scope !== 'agent') throw new Error('请选择记忆授权范围');
+    this.store.assertAgent(value.agentId);
+    return { scope: 'agent', agentId: value.agentId };
+  }
+  private memoryMetrics(b: ExperimentBundle, fingerprint?: string): Map<number, number> {
+    if (!b.confirmedAt || b.status !== 'collected' || !b.results?.complete || !b.receiptHash || (fingerprint && receiptFingerprint(b) !== fingerprint)) throw new Error('结果未确认、未完成或与授权时的回执不符');
+    const path = this.file(b.id, 'receipts/bundle-results.json');
+    const files = manifest(dirname(path)); const raw = readFileSync(path);
+    if (digest(files) !== b.receiptHash || sha(raw) !== files['bundle-results.json']) throw new Error('回执缺失或已改变');
+    const receipt = JSON.parse(raw.toString('utf8')) as { runner: string; bundleId: string; codeHash: string; manifestHash: string; plan: ExperimentPlan; status: string; runs: Array<{ seed: number; exitCode: number; metric: number }> };
+    if (receipt.runner !== 'xingshu-experiment-v1' || receipt.bundleId !== b.id || receipt.codeHash !== b.codeHash || receipt.manifestHash !== b.manifestHash || JSON.stringify(receipt.plan) !== JSON.stringify(b.plan) || receipt.status !== 'completed' || !Array.isArray(receipt.runs) || receipt.runs.length !== b.plan.seeds.length || receipt.runs.some(r => r.exitCode !== 0 || !b.plan.seeds.includes(r.seed) || !Number.isFinite(r.metric))) throw new Error('结果不匹配实验包');
+    const values = new Map(receipt.runs.map(r => [r.seed, r.metric]));
+    if (values.size !== b.plan.seeds.length) throw new Error('回执记录了重复 seed');
+    return values;
+  }
+  experimentMemory(action?: ExperimentMemoryAction): ExperimentMemorySnapshot {
+    const state = this.memoryState();
+    if (action) {
+      if (action.type === 'create') {
+        const title = typeof action.title === 'string' ? action.title.trim() : '';
+        const seeds = action.seeds;
+        if (!title || title.length > 120 || !Array.isArray(seeds) || seeds.length < 2 || seeds.length > 20 || new Set(seeds).size !== seeds.length || seeds.some(s => !Number.isSafeInteger(s) || s < 0 || s > 2147483647)) throw new Error('请填写标题和 2–20 个不重复的非负整数 seed');
+        const a = this.read(action.baselineId); const b = this.read(action.candidateId);
+        if (!a.proposalId.startsWith('baseline:') || b.proposalId.startsWith('baseline:')) throw new Error('请选择公共对照包和候选代码包作为模板');
+        const reasons = configurationDifferences(a, b, false);
+        if (reasons.length) throw new Error('对照与候选条件不一致：' + reasons.join('；'));
+        if (state.cards.length >= 60) throw new Error('本项目最多保存 60 张推导记忆卡');
+        state.cards.push({ id: 'memory-' + randomUUID(), title, audience: this.memoryAudience(action.audience), seeds: [...seeds].sort((x, y) => x - y), baselineKey: memoryArm(a), candidateKey: memoryArm(b), baselineVersionId: a.proposalId.slice(9), baselineCodeHash: a.codeHash, candidateCodeHash: b.codeHash, dataset: a.plan.dataset, split: a.plan.split, metricName: a.plan.metricName, metricUnit: a.plan.metricUnit ?? 'percent' });
+      } else if (action.type === 'audience') {
+        const card = state.cards.find(c => c.id === action.cardId);
+        if (!card) throw new Error('没有这张推导记忆卡');
+        card.audience = this.memoryAudience(action.audience);
+      } else if (action.type === 'source') {
+        const b = this.read(action.bundleId);
+        const values = this.memoryMetrics(b);
+        const existing = state.sources.find(s => s.bundleId === b.id);
+        if (existing?.withdrawnAt) throw new Error('该回执已撤回，更正结果请使用另一份核验后的实验包');
+        if (existing) throw new Error('这份回执已登记，请在来源列表调整可见范围');
+        if (state.sources.length >= 240) throw new Error('本项目最多登记 240 份推导来源');
+        if (action.delegateTo !== undefined) this.store.assertAgent(action.delegateTo);
+        state.sources.push({ bundleId: b.id, seeds: [...values.keys()].sort((x, y) => x - y), audience: this.memoryAudience(action.audience), arm: memoryArm(b), fingerprint: receiptFingerprint(b), receiptHash: b.receiptHash!, ...(action.delegateTo ? { delegateTo: action.delegateTo } : { submittedAt: now() }) });
+      } else if (action.type === 'sourceAudience' || action.type === 'withdraw') {
+        const source = state.sources.find(s => s.bundleId === action.bundleId);
+        if (!source) throw new Error('没有登记这份回执');
+        if (action.type === 'withdraw') source.withdrawnAt ??= now();
+        else {
+          if (source.withdrawnAt) throw new Error('已撤回的回执不能再次共享');
+          source.audience = this.memoryAudience(action.audience);
+        }
+      } else throw new Error('推导记忆操作无效');
+      this.saveMemory(state);
+    }
+    return { cards: this.memoryViews(state), sources: state.sources.map(({ bundleId, seeds, audience, delegateTo, submittedAt, withdrawnAt }) => ({ bundleId, seeds, audience, delegateTo, submittedAt, withdrawnAt })).reverse() };
+  }
+  submitExperimentMemorySource(bundleId: string, actor: MemoryActor): { submitted: true; bundleId: string } {
+    const state = this.memoryState();
+    const source = actor.privateChat && state.sources.find(s => s.bundleId === bundleId && s.delegateTo === actor.agentId && !s.withdrawnAt);
+    if (!source) throw new Error('你在本次私聊中没有这份回执的提交授权');
+    this.memoryMetrics(this.read(source.bundleId), source.fingerprint);
+    if (!source.submittedAt) { source.submittedAt = now(); this.saveMemory(state); }
+    return { submitted: true, bundleId: source.bundleId };
+  }
+  recallExperimentMemory(actor: MemoryActor, query?: string, pendingOnly = false): { cards: ExperimentMemoryView[]; pendingSubmissions: string[] } {
+    if (query !== undefined && (typeof query !== 'string' || query.length > 120)) throw new Error('记忆检索词最多 120 字');
+    const state = this.memoryState();
+    const term = query?.trim().toLowerCase() ?? '';
+    const cards = pendingOnly ? [] : state.cards.filter(c => memoryAllowed(c.audience, actor) && [c.title, c.metricName, c.dataset, c.split, c.id].some(v => v.toLowerCase().includes(term))).slice(-8);
+    return { cards: this.memoryViews({ cards, sources: state.sources }, actor), pendingSubmissions: actor.privateChat ? state.sources.filter(s => s.delegateTo === actor.agentId && !s.submittedAt && !s.withdrawnAt).map(s => s.bundleId) : [] };
+  }
+  private memoryViews(state: MemoryState, actor?: MemoryActor): ExperimentMemoryView[] {
+    if (!state.cards.length) return [];
+    const currentVersionId = this.store.snapshot().currentVersionId;
+    const arms = new Map<string, MemorySource[]>();
+    for (const source of state.sources) {
+      if (!source.submittedAt || source.withdrawnAt || (actor && !memoryAllowed(source.audience, actor))) continue;
+      const list = arms.get(source.arm) ?? []; list.push(source); arms.set(source.arm, list);
+    }
+    const verified = new Map<string, Map<number, number> | null>();
+    return state.cards.slice().reverse().map(({ baselineKey, candidateKey, ...card }) => {
+      const issues: string[] = []; const evidence: ExperimentMemoryView['evidence'] = [];
+      const readArm = (key: string, name: string): Map<number, Map<number, string[]>> => {
+        const seeds = new Map<number, Map<number, string[]>>();
+        for (const source of arms.get(key) ?? []) {
+          if (!source.seeds.some(seed => card.seeds.includes(seed))) continue;
+          if (!verified.has(source.bundleId)) {
+            try { verified.set(source.bundleId, this.memoryMetrics(this.read(source.bundleId), source.fingerprint)); }
+            catch { verified.set(source.bundleId, null); }
+          }
+          const values = verified.get(source.bundleId);
+          if (!values) { issues.push(name + '回执不可用：' + source.bundleId); continue; }
+          evidence.push({ bundleId: source.bundleId, receiptHash: source.receiptHash, ...(!actor && source.delegateTo ? { contributor: source.delegateTo } : {}) });
+          for (const [seed, value] of values) {
+            if (!card.seeds.includes(seed)) continue;
+            const metrics = seeds.get(seed) ?? new Map<number, string[]>();
+            const receipts = metrics.get(value) ?? []; receipts.push(source.bundleId); metrics.set(value, receipts); seeds.set(seed, metrics);
+          }
+        }
+        return seeds;
+      };
+      const baseline = readArm(baselineKey, '对照'); const candidate = readArm(candidateKey, '候选');
+      const pairs: ExperimentMemoryView['pairs'] = [];
+      for (const seed of card.seeds) {
+        const a = baseline.get(seed); const b = candidate.get(seed);
+        if (!a?.size) issues.push('缺少对照 seed ' + seed);
+        if (!b?.size) issues.push('缺少候选 seed ' + seed);
+        if (a && a.size > 1) issues.push('对照 seed ' + seed + ' 有冲突指标');
+        if (b && b.size > 1) issues.push('候选 seed ' + seed + ' 有冲突指标');
+        if (a?.size !== 1 || b?.size !== 1) continue;
+        const [av, baselineSources] = a.entries().next().value!; const [bv, candidateSources] = b.entries().next().value!;
+        pairs.push({ seed, baseline: av, candidate: bv, baselineSources, candidateSources });
+      }
+      const delta = pairs.reduce((n, p) => n + (p.candidate / card.seeds.length - p.baseline / card.seeds.length), 0);
+      const comparable = pairs.length === card.seeds.length && issues.length === 0 && Number.isFinite(delta);
+      if (!Number.isFinite(delta)) issues.push('指标差超出可计算范围');
+      return { ...card, historical: card.baselineVersionId !== currentVersionId, comparable, issues, pairs, evidence, ...(comparable ? { delta } : {}) };
+    });
   }
   private claims(): ExperimentClaim[] {
     const file = safe(this.store.root, 'runs/innovation-claims.json');
