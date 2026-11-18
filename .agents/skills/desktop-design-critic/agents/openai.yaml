@@ -1,0 +1,4 @@
+interface:
+  display_name: "桌面产品设计评审"
+  short_description: "研究优秀产品真实界面，建立统一视觉方向，审查中文排版、构图、交互并截图复验"
+  default_prompt: "使用 $desktop-design-critic 研究与本应用相关的优秀产品真实界面，建立符合中文要求的视觉方向，审查构图与交互，并对已授权修改进行实际截图对照。"

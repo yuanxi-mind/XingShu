@@ -11,7 +11,7 @@
 
 它从一个具体问题出发：有了 baseline，怎样让多个模型参与研究，又不把猜想当结论、不相互覆盖代码、不把私人方案混进别人的记忆？
 
-> 本项目基于 [Munder Difflin](https://github.com/chaitanyagiri/munder-difflin) 改造，保留上游署名。当前默认界面采用本地 API 协作模式；科研工作台、四盒权限、证据追溯、实验包和断点恢复为此衍生版本的实现。详见 [来源与许可](NOTICE.md)。
+**星枢的核心设计**是把研究者的决定变成可核查的流程：各 Agent 在私人空间提出方案，你决定公开和采纳哪些；实施者只改授权副本，由另一位 Agent 核对实际修改；实验结果经你确认才进入事实盒。四盒权限、证据记忆、实验包和断点恢复由星枢实现。
 
 ## 可以做什么
 
@@ -145,11 +145,18 @@ React 界面 → Electron preload / 项目级 IPC → API 协作管理器
 
 **当前限制：**不能保证零幻觉、论文新颖性或实验提分。记忆检索为中英词法检索，尚未使用向量数据库；扫描 PDF 暂无 OCR；科研模式不开放任意 shell；多 seed 比较不等于统计显著性检验；远程训练须自行准备 Linux / Python / Docker / 固定 digest 镜像和数据集，真实服务器兼容性需另行验证。不要把离线模拟验收当成真实付费模型或训练验收。
 
+## 自研技能：桌面产品设计评审
+
+[`desktop-design-critic`](.agents/skills/desktop-design-critic/SKILL.md) 是星枢项目编写的 Codex 技能，也可用于其他桌面应用。它以实际界面和任务为证据，检查中文排版、空间分配、操作反馈与错误恢复，并用同尺寸截图复验授权修改。
+
+用 Codex 打开本仓库，在对话中输入 `$desktop-design-critic`，说明要评审的界面和主要操作。例如：「检查新建 Agent 的流程，看看入口是否好找、窄窗口里是否还能清楚保存。」
+
 ## 来源与许可
 
 **代码与美术分别许可，不能把整个发行包理解为可自由商用的 MIT。**
 
-- Munder Difflin 基础代码：MIT，保留 Chaitanya Giri 署名，见 [LICENSE](LICENSE)。本衍生版本新增代码同样按 MIT 提供。
+- 星枢新增的代码及桌面设计评审技能按 [MIT](LICENSE) 提供。
+- [Munder Difflin](https://github.com/HarnessMD/munder-difflin) 的部分基础代码（如 SQLite 状态和保留的 CLI 模块）仍在本仓库，遵循 MIT，保留 Chaitanya Giri 署名。详见 [第三方来源](NOTICE.md)。
 - NextChat 适配界面资源：MIT，保留其 [许可](src/renderer/src/vendor/nextchat/LICENSE) 与 [说明](src/renderer/src/vendor/nextchat/NOTICE.md)。
 - Q 版角色：来自 [fywdy/chatgpt-chibi-pets](https://github.com/fywdy/chatgpt-chibi-pets)，**CC BY-NC 4.0，限非商业使用**，见 [署名](src/renderer/src/vendor/chibi-pets/ATTRIBUTION.txt) 和 [完整许可](src/renderer/src/vendor/chibi-pets/LICENSE.txt)。README 截图中包含这些角色，相关美术权利不因截图而改变。
 - 字体：见 [字体许可](src/renderer/src/assets/fonts/LICENSE.txt)。模型和产品名称归各权利人所有；本项目没有获得模型厂商背书。
