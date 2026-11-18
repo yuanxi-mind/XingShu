@@ -31,4 +31,21 @@ export interface ResearchServer {
   host: string; port: number; username: string; identityFile: string; hostFingerprint: string;
   remoteRoot: string; datasetRoot: string;
 }
-export interface ExperimentSnapshot { server: ResearchServer | null; bundles: ExperimentBundle[] }
+export interface ExperimentClaimPair {
+  baselineId: string; candidateId: string; direction: 'higher' | 'lower'; minimumGain: number;
+}
+export interface ExperimentClaimInput {
+  hypothesis: string; overall: ExperimentClaimPair; stress: ExperimentClaimPair;
+}
+export interface LockedClaimPair extends ExperimentClaimPair {
+  baselineHash: string; candidateHash: string; dataset: string; split: string; metricName: string; metricUnit: NonNullable<ExperimentPlan['metricUnit']>;
+}
+export interface ExperimentClaim {
+  id: string; lockedAt: string; hypothesis: string; overall: LockedClaimPair; stress: LockedClaimPair;
+}
+export interface ClaimCheck {
+  status: 'met' | 'not-met' | 'insufficient'; reason?: string;
+  improvement?: number; pairs?: Array<{ seed: number; baseline: number; candidate: number }>;
+}
+export interface ExperimentClaimResult { id: string; status: ClaimCheck['status']; overall: ClaimCheck; stress: ClaimCheck }
+export interface ExperimentSnapshot { server: ResearchServer | null; bundles: ExperimentBundle[]; claims: ExperimentClaim[] }

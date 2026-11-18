@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
-import type { ExperimentBundle, ExperimentPlan, ExperimentSnapshot, ResearchServer } from '../shared/researchIntelligence';
+import type { ClaimCheck, ExperimentBundle, ExperimentClaim, ExperimentClaimInput, ExperimentClaimPair, ExperimentClaimResult, ExperimentPlan, ExperimentSnapshot, LockedClaimPair, ResearchServer } from '../shared/researchIntelligence';
 import { EXPERIMENT_RUNNER } from './experimentRunner';
 import { ResearchWorkspaceStore, researchAtomicJson as atomic, researchCopyTree as copy, researchFileManifest as manifest, researchManifestHash as digest, researchSafePath as safe } from './researchWorkspace';
 import { ResearchSshTransport } from './researchSsh';
@@ -28,6 +28,14 @@ export function validateExperimentPlan(p: ExperimentPlan): ExperimentPlan {
   if (p.metricUnit && !['percent', 'fraction', 'number'].includes(p.metricUnit)) throw new Error('指标单位无效');
   return { ...p, metricUnit: p.metricUnit ?? 'percent', args: [...p.args], seeds: [...p.seeds], entrypoint: relativeFile(p.entrypoint, '训练入口'), dependencyFile: relativeFile(p.dependencyFile, '依赖文件'), metricPath: relativeFile(p.metricPath, '指标文件'), ...(p.splitManifest ? { splitManifest: relativeFile(p.splitManifest, '划分清单') } : {}) };
 }
+function configurationDifferences(a: ExperimentBundle, b: ExperimentBundle): string[] {
+  const reasons: string[] = [];
+  if (!a.splitHash || a.splitHash !== b.splitHash) reasons.push('缺少相同的划分清单哈希');
+  if (!a.dependencyHash || a.dependencyHash !== b.dependencyHash) reasons.push('依赖文件哈希不一致');
+  for (const field of ['dataset', 'split', 'seeds', 'seedFlag', 'image', 'metricName', 'metricUnit', 'metricPath', 'entrypoint', 'args', 'dependencyFile', 'splitManifest', 'timeoutSeconds', 'cpus', 'memoryGb', 'gpuDevices'] as const) if (JSON.stringify(a.plan[field]) !== JSON.stringify(b.plan[field])) reasons.push(`${field}不一致`);
+  return reasons;
+}
+const claimBundleHash = (b: ExperimentBundle): string => sha(JSON.stringify([b.id, b.proposalId, b.codeHash, b.manifestHash, b.archiveHash, b.dependencyHash, b.splitHash, b.plan]));
 function tarHeader(name: string, size: number): Buffer {
   const header = Buffer.alloc(512); let leaf = name; let prefix = '';
   if (Buffer.byteLength(name) > 100) { const cut = name.lastIndexOf('/'); prefix = name.slice(0, cut); leaf = name.slice(cut + 1); }
@@ -48,7 +56,7 @@ export class ResearchExperiments {
     const index = safe(this.store.root, 'runs/experiment-bundles/index.json');
     const ids: string[] = existsSync(index) ? JSON.parse(readFileSync(index, 'utf8')) as string[] : [];
     if (!Array.isArray(ids) || ids.length > 1000) throw new Error('实验包索引损坏');
-    return { server: this.transport.server(), bundles: ids.slice(-60).reverse().map(id => this.read(id)) };
+    return { server: this.transport.server(), bundles: ids.slice(-60).reverse().map(id => this.read(id)), claims: this.claims().slice().reverse() };
   }
   private save(b: ExperimentBundle): void { atomic(this.file(b.id), b); }
   private async exclusive<T>(key: string, work: () => Promise<T>): Promise<T> {
@@ -174,9 +182,73 @@ export class ResearchExperiments {
       try { if (!item.receiptHash || item.receiptHash !== digest(manifest(dirname(this.file(item.id, 'receipts/bundle-results.json'))))) reasons.push('实验凭据已变化，不能继续使用旧确认'); }
       catch { reasons.push('实验凭据缺失，不能继续使用旧确认'); }
     }
-    if (!a.splitHash || a.splitHash !== b.splitHash) reasons.push('缺少相同的划分清单哈希');
-    if (!a.dependencyHash || a.dependencyHash !== b.dependencyHash) reasons.push('依赖文件哈希不一致');
-    for (const field of ['dataset', 'split', 'seeds', 'seedFlag', 'image', 'metricName', 'metricUnit', 'metricPath', 'entrypoint', 'args', 'dependencyFile', 'splitManifest', 'timeoutSeconds', 'cpus', 'memoryGb', 'gpuDevices'] as const) if (JSON.stringify(a.plan[field]) !== JSON.stringify(b.plan[field])) reasons.push(`${field}不一致`);
+    reasons.push(...configurationDifferences(a, b));
     return { comparable: reasons.length === 0, reasons, ...(reasons.length === 0 ? { delta: b.results!.mean - a.results!.mean } : {}) };
+  }
+  private claims(): ExperimentClaim[] {
+    const file = safe(this.store.root, 'runs/innovation-claims.json');
+    if (!existsSync(file)) return [];
+    const claims: unknown = JSON.parse(readFileSync(file, 'utf8'));
+    if (!Array.isArray(claims)) throw new Error('反例检验卡索引损坏');
+    return claims as ExperimentClaim[];
+  }
+  lockClaim(input: ExperimentClaimInput): ExperimentClaim {
+    const hypothesis = typeof input?.hypothesis === 'string' ? input.hypothesis.trim() : '';
+    if (!hypothesis || hypothesis.length > 500) throw new Error('请填写要检验的主张（最多500字）');
+    const readPair = (pair: ExperimentClaimPair, label: string) => {
+      if (!pair || typeof pair.baselineId !== 'string' || typeof pair.candidateId !== 'string') throw new Error(`${label}：请选择对照包和候选包`);
+      const a = this.read(pair.baselineId); const b = this.read(pair.candidateId);
+      if (!a.proposalId.startsWith('baseline:') || b.proposalId.startsWith('baseline:') || a.codeHash === b.codeHash) throw new Error(`${label}：请选择公共对照和不同代码的候选包`);
+      if (b.status !== 'prepared' || b.results || b.experimentId || this.busy.has(b.id)) throw new Error(`${label}：候选包须尚未提交或回收结果`);
+      const reasons = configurationDifferences(a, b);
+      if (a.plan.seeds.length < 2) reasons.push('至少需要2个相同seed');
+      if (reasons.length) throw new Error(`${label}：${reasons.join('；')}`);
+      const metricUnit = a.plan.metricUnit ?? 'percent';
+      const limit = metricUnit === 'percent' ? 100 : metricUnit === 'fraction' ? 1 : Number.MAX_VALUE;
+      if ((pair.direction !== 'higher' && pair.direction !== 'lower') || !Number.isFinite(pair.minimumGain) || pair.minimumGain <= 0 || pair.minimumGain > limit) throw new Error(`${label}：请选择改善方向并填写大于零且符合指标单位的阈值`);
+      const record: LockedClaimPair = { baselineId: a.id, candidateId: b.id, direction: pair.direction, minimumGain: pair.minimumGain, baselineHash: claimBundleHash(a), candidateHash: claimBundleHash(b), dataset: a.plan.dataset, split: a.plan.split, metricName: a.plan.metricName, metricUnit };
+      return { a, b, record };
+    };
+    const overall = readPair(input.overall, '总评'); const stress = readPair(input.stress, '反例');
+    const p = this.store.snapshot().proposals.find(p => p.id === overall.b.proposalId);
+    if (overall.a.proposalId !== stress.a.proposalId || overall.a.codeHash !== stress.a.codeHash || overall.b.proposalId !== stress.b.proposalId || overall.b.codeHash !== stress.b.codeHash || overall.a.proposalId !== `baseline:${p?.approval?.baselineVersionId}` || p?.implementationHash !== overall.b.codeHash) throw new Error('两组实验须对应同一公共版本与同一份已核查的候选代码');
+    const review = p.reviews.at(-1);
+    if (!review?.passed || review.codeHash !== overall.b.codeHash || p.publishedVersionId || this.store.codeHash(p.id) !== overall.b.codeHash) throw new Error('候选代码或核查已更新，请重新核查并生成新实验包');
+    if (overall.a.splitHash === stress.a.splitHash) throw new Error('反例须使用不同的划分清单，不能拿同一组数据充当反例');
+    const claims = this.claims();
+    const candidates = new Set([overall.b.id, stress.b.id]);
+    if (claims.some(c => candidates.has(c.overall.candidateId) || candidates.has(c.stress.candidateId))) throw new Error('候选包已被锁定，新的判据请使用新实验包');
+    const claim: ExperimentClaim = { id: 'claim-' + randomUUID(), lockedAt: now(), hypothesis, overall: overall.record, stress: stress.record };
+    atomic(safe(this.store.root, 'runs/innovation-claims.json', true), [...claims, claim]);
+    return claim;
+  }
+  checkClaim(id: string): ExperimentClaimResult {
+    const claim = this.claims().find(c => c.id === id);
+    if (!claim) throw new Error('这个项目没有该反例检验卡');
+    const check = (pair: LockedClaimPair): ClaimCheck => {
+      try {
+        const a = this.read(pair.baselineId); const b = this.read(pair.candidateId);
+        if (claimBundleHash(a) !== pair.baselineHash || claimBundleHash(b) !== pair.candidateHash) return { status: 'insufficient', reason: '实验包信息已变化，不能用于原判据' };
+        const comparison = this.compare(a.id, b.id);
+        if (!comparison.comparable) return { status: 'insufficient', reason: [...new Set(comparison.reasons)].join('；') };
+        const readMetrics = (bundle: ExperimentBundle): Map<number, number> => {
+          const receipt = JSON.parse(readFileSync(this.file(bundle.id, 'receipts/bundle-results.json'), 'utf8')) as { bundleId: string; codeHash: string; manifestHash: string; plan: ExperimentPlan; status: string; runs: Array<{ seed: number; exitCode: number; metric: number }> };
+          if (receipt.bundleId !== bundle.id || receipt.codeHash !== bundle.codeHash || receipt.manifestHash !== bundle.manifestHash || JSON.stringify(receipt.plan) !== JSON.stringify(bundle.plan) || receipt.status !== 'completed' || !Array.isArray(receipt.runs) || receipt.runs.length !== bundle.plan.seeds.length || receipt.runs.some(r => r.exitCode !== 0 || !bundle.plan.seeds.includes(r.seed) || !Number.isFinite(r.metric))) throw new Error('结果不匹配实验包');
+          const values = new Map(receipt.runs.map(r => [r.seed, r.metric]));
+          if (values.size !== bundle.plan.seeds.length) throw new Error('seed重复');
+          return values;
+        };
+        const av = readMetrics(a); const bv = readMetrics(b);
+        const pairs = a.plan.seeds.map(seed => ({ seed, baseline: av.get(seed)!, candidate: bv.get(seed)! }));
+        const sign = pair.direction === 'higher' ? 1 : -1;
+        const improvement = pairs.reduce((sum, p) => sum + sign * (p.candidate - p.baseline) / pairs.length, 0);
+        if (!Number.isFinite(improvement)) return { status: 'insufficient', reason: '指标差超出可计算范围' };
+        const tolerance = 8 * Number.EPSILON * Math.max(1, ...pairs.flatMap(p => [Math.abs(p.baseline), Math.abs(p.candidate)]));
+        return { status: improvement > 0 && improvement + tolerance >= pair.minimumGain ? 'met' : 'not-met', improvement, pairs };
+      } catch { return { status: 'insufficient', reason: '实验包或回收凭据缺失、损坏，不能核验' }; }
+    };
+    const overall = check(claim.overall); const stress = check(claim.stress);
+    const status = overall.status === 'insufficient' || stress.status === 'insufficient' ? 'insufficient' : overall.status === 'met' && stress.status === 'met' ? 'met' : 'not-met';
+    return { id, status, overall, stress };
   }
 }

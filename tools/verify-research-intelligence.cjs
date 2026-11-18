@@ -6,7 +6,7 @@ const fs = require('node:fs'); const path = require('node:path'); const crypto =
 const output = qa.output('research-intelligence');
 const executablePath = qa.executable();
 const root = path.join(output, 'fixture-' + Date.now()); const source = path.join(root, 'baseline-source'); fs.mkdirSync(source, { recursive: true });
-for (const [name, value] of Object.entries({ 'train.py': 'def predict(x):\n    return x\n', 'paper.md': '# Baseline\n隔离验收资料，双时相输入预测变化图；这里没有真实科研结论。', 'requirements.txt': 'torch==2.5.1\n', 'splits.json': '["test-a","test-b"]\n' })) fs.writeFileSync(path.join(source, name), value);
+for (const [name, value] of Object.entries({ 'train.py': 'def predict(x):\n    return x\n', 'paper.md': '# Baseline\n隔离验收资料，双时相输入预测变化图；这里没有真实科研结论。', 'requirements.txt': 'torch==2.5.1\n', 'splits.json': '["test-a","test-b"]\n', 'seasonal-splits.json': '["seasonal-a","seasonal-b"]\n' })) fs.writeFileSync(path.join(source, name), value);
 const sha = x => crypto.createHash('sha256').update(x).digest('hex');
 const report = { startedAt: new Date().toISOString(), executablePath, realProviderRequests: 0, realTrainingRuns: 0, checks: [], rendererErrors: [], viewports: [], fetchHistory: [] };
 const env = { ...process.env, MULTI_AGENT_ROOT: root, TEMP: qa.temp, TMP: qa.temp, DO_NOT_TRACK: '1' }; delete env.ELECTRON_RUN_AS_NODE;
@@ -69,7 +69,7 @@ async function launch() {
 async function open(project) { await button(project.name).click(); await button('科研工作台').click(); }
 function results(project, b, offset = 0) {
   const directory = path.join(root, 'server-fixture', b.id, 'results'); fs.mkdirSync(directory, { recursive: true });
-  const runs = b.plan.seeds.map((seed, i) => { const d = path.join(directory, 'seed-' + seed); fs.mkdirSync(d); const log = 'MOCK SERVER ONLY seed=' + seed; const metrics = JSON.stringify({ F1: 89 + i + offset }); fs.writeFileSync(path.join(d, 'train.log'), log); fs.writeFileSync(path.join(d, 'metrics.json'), metrics); return { seed, exitCode: 0, metric: 89 + i + offset, log: `results/seed-${seed}/train.log`, logHash: sha(log), metrics: `results/seed-${seed}/metrics.json`, metricsHash: sha(metrics) }; });
+  const runs = b.plan.seeds.map((seed, i) => { const d = path.join(directory, 'seed-' + seed); fs.mkdirSync(d); const log = 'MOCK SERVER ONLY seed=' + seed; const metric = (b.plan.metricName === 'FPR' ? 6 : 89) + i + offset; const metrics = JSON.stringify({ [b.plan.metricName]: metric }); fs.writeFileSync(path.join(d, 'train.log'), log); fs.writeFileSync(path.join(d, 'metrics.json'), metrics); return { seed, exitCode: 0, metric, log: `results/seed-${seed}/train.log`, logHash: sha(log), metrics: `results/seed-${seed}/metrics.json`, metricsHash: sha(metrics) }; });
   const file = path.join(directory, 'bundle-results.json'); fs.writeFileSync(file, JSON.stringify({ runner: 'xingshu-experiment-v1', bundleId: b.id, codeHash: b.codeHash, manifestHash: b.manifestHash, plan: b.plan, status: 'completed', runs })); return file;
 }
 (async () => {
@@ -125,6 +125,26 @@ function results(project, b, offset = 0) {
     check('baseline与候选代码均生成真实tar.gz、清单、依赖和多seed配置', [baselineBundle, candidate].every(b => b.archiveHash === sha(fs.readFileSync(path.join(project.root, b.archiveReference))) && fs.existsSync(path.join(project.root, b.reference, 'run_experiment.py'))));
     check('未配置服务器时不能误提交训练', await button('准备提交服务器').isDisabled());
     await shot('05-experiment-bundle');
+    const [stressBaseline, stressCandidate] = await page.evaluate(async ({ id, proposalId, plan }) => {
+      const stress = { ...plan, split: '季节难例（演示）', splitManifest: 'seasonal-splits.json', metricName: 'FPR' };
+      return [await window.cth.apiCollabExperimentPrepare(id, '__baseline__', stress), await window.cth.apiCollabExperimentPrepare(id, proposalId, stress)];
+    }, { id: project.id, proposalId: p.id, plan: baselineBundle.plan });
+    await button('刷新实验包').click();
+    const claimPanel = page.getByRole('region', { name: '反例检验卡', exact: true });
+    await claimPanel.getByText('登记新卡', { exact: true }).click();
+    await claimPanel.getByLabel('要检验的主张', { exact: true }).fill('季节伪变化误报率应该下降（演示）');
+    for (const [label, control, trial] of [['总评', baselineBundle, candidate], ['反例', stressBaseline, stressCandidate]]) {
+      await claimPanel.getByLabel(label + '公共对照包', { exact: true }).selectOption(control.id);
+      await claimPanel.getByLabel(label + '候选包', { exact: true }).selectOption(trial.id);
+      await claimPanel.getByLabel(label + '最小改善（百分点）', { exact: true }).fill('0.5');
+    }
+    await claimPanel.getByLabel('反例指标方向', { exact: true }).selectOption('lower');
+    await button('锁定总评与反例判据').click();
+    await claimPanel.getByText(/判据已锁定/u).waitFor();
+    await claimPanel.getByText('登记新卡', { exact: true }).click();
+    await button('核验反例检验卡').click();
+    await claimPanel.getByText(/^还缺可比证据/u).waitFor();
+    check('真实表单先锁定总评与反例，未回收时不输出判定');
     for (const [b, offset] of [[baselineBundle, 0], [candidate, 0.5]]) {
       await experiment.getByLabel('查看实验包', { exact: true }).selectOption(b.id); const file = results(project, b, offset); await app.evaluate((_e, file) => globalThis.__qaDialogs.push({ canceled: false, filePaths: [file] }), file); await button('导入服务器结果').click(); await waitFor(async () => (await bundles(project.id)).bundles.find(x => x.id === b.id)?.results);
       if (offset) check('日志与结果已核验，但人工确认前私人事实盒仍为空', fs.readdirSync(path.join(project.root, 'AgentChats/a/boxes/facts')).filter(n => n.endsWith('.json')).length === 0);
@@ -133,7 +153,20 @@ function results(project, b, offset = 0) {
     await experiment.getByLabel('对照实验包', { exact: true }).selectOption(baselineBundle.id); await experiment.getByLabel('候选实验包', { exact: true }).selectOption(candidate.id); await button('核对可比条件并计算差值').click(); await page.getByText(/均值差=0.5000/u).waitFor();
     check('三个seed的日志指标与人工确认闭环，对照均值差0.5且事实落盘', fs.readdirSync(path.join(project.root, 'AgentChats/a/boxes/facts')).filter(n => n.endsWith('.json')).length === 1);
     await shot('06-confirmed-comparison');
-    await button('证据追溯').click(); await button('刷新证据链').click(); await page.locator('.rt-evidence-experiment').waitFor(); await page.locator('.rt-evidence-conclusion').waitFor();
+    for (const [b, offset] of [[stressBaseline, 0], [stressCandidate, 0.25]]) {
+      await experiment.getByLabel('查看实验包', { exact: true }).selectOption(b.id);
+      const file = results(project, b, offset);
+      await app.evaluate((_e, file) => globalThis.__qaDialogs.push({ canceled: false, filePaths: [file] }), file);
+      await button('导入服务器结果').click();
+      await waitFor(async () => (await bundles(project.id)).bundles.find(x => x.id === b.id)?.results);
+      await button('人工确认包内实验结果').click();
+      await waitFor(async () => (await bundles(project.id)).bundles.find(x => x.id === b.id)?.confirmedAt);
+    }
+    await button('核验反例检验卡').click();
+    await claimPanel.getByText(/^未达到预登记判据/u).waitFor();
+    check('总评提高0.5、误报率反升0.25，反例未达标且逐seed可核对', await claimPanel.getByText(/未达标 · 实际上升 0\.25/u).isVisible() && await claimPanel.getByText(/seed 1: 6 → 6\.25/u).isVisible());
+    await claimPanel.screenshot({ path: path.join(output, '08-counterexample-card.png'), animations: 'disabled', timeout: 20000 });
+    await button('证据追溯').click(); await button('刷新证据链').click(); await page.locator('.rt-evidence-experiment').first().waitFor(); await page.locator('.rt-evidence-conclusion').first().waitFor();
     check('人工确认后证据链连接实验与限定条件下的观察，未伪称独立复跑');
     for (const [w, h] of [[1100, 760], [760, 700]]) { await resize(w, h); await noOverflow(`${w}证据页不溢出`); await shot('evidence-' + w); await button('可复现实验').click(); await noOverflow(`${w}实验页不溢出`); await shot('experiments-' + w); await button('能力评测').click(); await noOverflow(`${w}评测页不溢出`); await shot('benchmark-' + w); await button('证据追溯').click(); }
     await resize(1440, 960);
@@ -141,9 +174,12 @@ function results(project, b, offset = 0) {
     await page.locator('.rw-tabs button').last().focus(); await page.keyboard.press('Tab'); check('科研面板按钮支持键盘焦点', await page.evaluate(() => document.activeElement instanceof HTMLButtonElement));
     await page.evaluate(id => { const k = `tongzhou-appearance:project:${id}`; const s = JSON.parse(localStorage.getItem(k)); localStorage.setItem(k, JSON.stringify({ ...s, theme: 'dark' })); }, project.id); await page.reload(); await open(project); await button('可复现实验').click(); await page.locator('.tz-app[data-theme=dark]').waitFor(); await noOverflow('深色实验页不溢出'); await shot('07-dark-experiments');
     const other = await page.evaluate(() => window.cth.apiCollabCreateProject('另一份全新项目')); const empty = await page.evaluate(async id => ({ snapshot: await window.cth.apiCollabSnapshot(id), evaluation: await window.cth.apiCollabBenchmarkSnapshot(id), experiments: await window.cth.apiCollabExperimentSnapshot(id), research: await window.cth.apiCollabResearchSnapshot(id) }), other.id);
-    check('新项目Agent、评测、实验、服务器、记忆和版本全部空白', !empty.snapshot.agents.length && !empty.evaluation.runs.length && !empty.experiments.bundles.length && !empty.experiments.server && !empty.research.versions.length && !empty.research.proposals.length);
+    check('新项目Agent、评测、实验、服务器、记忆和版本全部空白', !empty.snapshot.agents.length && !empty.evaluation.runs.length && !empty.experiments.bundles.length && !empty.experiments.claims.length && !empty.experiments.server && !empty.research.versions.length && !empty.research.proposals.length);
     await close(); await launch(); await open(project); const restored = await state(project.id); const restoredBundles = await bundles(project.id); const restoredEvals = await page.evaluate(id => window.cth.apiCollabBenchmarkSnapshot(id), project.id);
-    check('完整重启恢复评测、方案、已确认实验、工具记录和当前公共版', restoredEvals.runs.length === 2 && restoredBundles.bundles.length === 2 && restoredBundles.bundles.every(b => b.confirmedAt) && restored.proposals[0].experiments[0].confirmedAt && restored.runs.every(r => r.status === 'complete') && restored.currentVersionId === version.id);
+    check('完整重启恢复评测、方案、已确认实验、工具记录和当前公共版', restoredEvals.runs.length === 2 && restoredBundles.bundles.length === 4 && restoredBundles.claims.length === 1 && restoredBundles.bundles.every(b => b.confirmedAt) && restored.proposals[0].experiments[0].confirmedAt && restored.runs.every(r => r.status === 'complete') && restored.currentVersionId === version.id);
+    await button('可复现实验').click(); await button('核验反例检验卡').click();
+    await page.getByRole('region', { name: '反例检验卡', exact: true }).getByText('未达到预登记判据', { exact: true }).waitFor();
+    check('重启后可从既有回执重新核验同一张反例卡');
     check('前端运行异常为0', !report.rendererErrors.length);
     if (process.env.XINGSHU_CAPTURE_SCREENSHOTS === '1') await require('./capture-screenshots.cjs').capture({ app, page, project }); report.finishedAt = new Date().toISOString(); await close(); fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify({ output, checks: report.checks.length, rendererErrors: report.rendererErrors, asarSha256: report.asarSha256 }, null, 2));
   } catch (error) { if (page) { console.error(await page.locator('body').innerText({ timeout: 3000 }).catch(() => 'No DOM')); await shot('failure').catch(() => {}); } throw error; }

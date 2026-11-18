@@ -399,6 +399,8 @@ ipcMain.handle('apiCollab:experimentRefresh', (event, projectId: string, id: str
 ipcMain.handle('apiCollab:experimentCancel', (event, projectId: string, id: string, consent: boolean) => { researchWindow(event); return apiCollab.forProject(projectId).researchExperiments(projectId).cancel(id, consent); });
 ipcMain.handle('apiCollab:experimentCollect', (event, projectId: string, id: string) => { researchWindow(event); return apiCollab.forProject(projectId).researchExperiments(projectId).collect(id); });
 ipcMain.handle('apiCollab:experimentConfirm', (event, projectId: string, id: string, consent: boolean) => { researchWindow(event); return apiCollab.forProject(projectId).researchExperiments(projectId).confirm(id, consent); });
+ipcMain.handle('apiCollab:experimentLockClaim', (event, projectId: string, input: Parameters<ReturnType<ApiCollabManager['researchExperiments']>['lockClaim']>[0]) => { researchWindow(event); return apiCollab.forProject(projectId).researchExperiments(projectId).lockClaim(input); });
+ipcMain.handle('apiCollab:experimentCheckClaim', (event, projectId: string, id: string) => { researchWindow(event); return apiCollab.forProject(projectId).researchExperiments(projectId).checkClaim(id); });
 ipcMain.handle('apiCollab:experimentCompare', (event, projectId: string, a: string, b: string) => { researchWindow(event); return apiCollab.forProject(projectId).researchExperiments(projectId).compare(a, b); });
 ipcMain.handle('apiCollab:experimentImport', async (event, projectId: string, id: string) => {
   const window = researchWindow(event); const manager = apiCollab.forProject(projectId).researchExperiments(projectId);

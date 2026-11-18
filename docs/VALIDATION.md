@@ -31,7 +31,7 @@ Electron 验收默认启动本仓库 `npm run build` 的输出，使用 npm 安�
 
 `tools/capture-screenshots.cjs` 在 D 盘创建全新的演示根目录，不读取正式项目。模型响应完全拦截，研究代码仅为合成小例子，实验指标仅为固定演示数值。应用页内可见“演示”标记；截图为窗口实际渲染，不是 HTML 营销 mockup。
 
-输出：`docs/screenshots/01-chat.png` 到 `05-benchmark.png`；本地报告在忽略的 D 盘验收目录。所有图片需要人工查看后再用于发布。报告包含本地绝对路径，不能随截图一起提交。
+输出：`docs/screenshots/01-chat.png` 到 `05-benchmark.png`。反例检验卡的截图另由 `npm run qa:intelligence` 生成（验收目录下的 `08-counterexample-card.png`），README 中使用已人工检查的副本。本地报告在忽略的 D 盘验收目录。所有图片需要人工查看后再用于发布。报告包含本地绝对路径，不能随截图一起提交。
 
 ## 不能从这些检查推出什么
 

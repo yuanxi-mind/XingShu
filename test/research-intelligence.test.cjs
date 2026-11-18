@@ -17,6 +17,7 @@ function fixture(staleMetrics = false) {
   const root = path.join(base, crypto.randomUUID()); const src = path.join(root, 'source'); fs.mkdirSync(src, { recursive: true });
   fs.writeFileSync(path.join(src, 'train.py'), 'def predict(x):\n    return x\n'); fs.writeFileSync(path.join(src, 'paper.md'), '# Baseline\n真实读取测试用说明，不是科研结论。');
   fs.writeFileSync(path.join(src, 'requirements.txt'), 'torch==2.5.1\n'); fs.writeFileSync(path.join(src, 'splits.json'), '["sample-a","sample-b"]\n');
+  fs.writeFileSync(path.join(src, 'seasonal-splits.json'), '["seasonal-a","seasonal-b"]\n');
   if (staleMetrics) fs.writeFileSync(path.join(src, 'metrics.json'), '{"F1":100}');
   const store = new ResearchWorkspaceStore(root, () => ['a', 'b', 'c']); const version = store.importBaseline(src);
   for (const id of ['a', 'b', 'c']) store.initializeAgent(id);
@@ -126,9 +127,43 @@ test('tool intent refuses conflicting ids and recovers an applied edit after rec
 const plan = () => ({ entrypoint: 'train.py', args: ['--data', '/datasets'], seedFlag: '--seed', seeds: [1, 2, 3], dataset: 'CD-fixture', split: 'official-test', dependencyFile: 'requirements.txt', splitManifest: 'splits.json', image: 'fixture/image@sha256:' + '1'.repeat(64), metricPath: 'metrics.json', metricName: 'F1', timeoutSeconds: 60, cpus: 2, memoryGb: 4, gpuDevices: '' });
 function fakeResults(f, b, offset = 0, fail = false) {
   const dir = path.join(f.root, 'server-' + b.id); fs.mkdirSync(path.join(dir, 'results'), { recursive: true });
-  const runs = b.plan.seeds.map((seed, index) => { const folder = path.join(dir, 'results', 'seed-' + seed); fs.mkdirSync(folder); const log = 'seed ' + seed + ' completed'; fs.writeFileSync(path.join(folder, 'train.log'), log); const metrics = JSON.stringify({ F1: 89 + index + offset }); fs.writeFileSync(path.join(folder, 'metrics.json'), metrics); return { seed, exitCode: fail && index === 2 ? 1 : 0, log: `results/seed-${seed}/train.log`, logHash: sha(log), ...(fail && index === 2 ? {} : { metric: 89 + index + offset, metrics: `results/seed-${seed}/metrics.json`, metricsHash: sha(metrics) }) }; });
+  const runs = b.plan.seeds.map((seed, index) => { const folder = path.join(dir, 'results', 'seed-' + seed); fs.mkdirSync(folder); const log = 'seed ' + seed + ' completed'; fs.writeFileSync(path.join(folder, 'train.log'), log); const metrics = JSON.stringify({ [b.plan.metricName]: 89 + index + offset }); fs.writeFileSync(path.join(folder, 'metrics.json'), metrics); return { seed, exitCode: fail && index === 2 ? 1 : 0, log: `results/seed-${seed}/train.log`, logHash: sha(log), ...(fail && index === 2 ? {} : { metric: 89 + index + offset, metrics: `results/seed-${seed}/metrics.json`, metricsHash: sha(metrics) }) }; });
   const file = path.join(dir, 'results/bundle-results.json'); fs.writeFileSync(file, JSON.stringify({ runner: 'xingshu-experiment-v1', bundleId: b.id, manifestHash: b.manifestHash, codeHash: b.codeHash, plan: b.plan, status: fail ? 'failed' : 'completed', runs })); return file;
 }
+test('counterexample card freezes both matched comparisons, exposes contradictory evidence, and survives reopen', async () => {
+  const f = fixture(); const p = f.implement(); const m = new ResearchExperiments(f.store);
+  const seasonal = { ...plan(), split: 'seasonal-hard-cases', splitManifest: 'seasonal-splits.json', metricName: 'FPR' };
+  const a = await m.prepare('__baseline__', plan()); const b = await m.prepare(p.id, plan());
+  const c = await m.prepare('__baseline__', seasonal); const d = await m.prepare(p.id, seasonal);
+  const draft = { hypothesis: '总评提升且季节伪变化误报减少', overall: { baselineId: a.id, candidateId: b.id, direction: 'higher', minimumGain: 0.5 }, stress: { baselineId: c.id, candidateId: d.id, direction: 'lower', minimumGain: 0.5 } };
+  assert.throws(() => m.lockClaim({ ...draft, stress: { ...draft.stress, baselineId: a.id } }), /反例.*划分/);
+  assert.throws(() => m.lockClaim({ ...draft, stress: draft.overall }), /不同的划分/);
+  const selected = m.lockClaim(draft);
+  assert.throws(() => m.lockClaim(draft), /已被锁定/);
+  assert.equal(m.checkClaim(selected.id).status, 'insufficient');
+  const reverseReceipt = file => { const saved = JSON.parse(fs.readFileSync(file)); saved.runs.reverse(); fs.writeFileSync(file, JSON.stringify(saved)); return file; };
+  for (const [bundle, offset] of [[a, 0], [b, 0.5], [c, 0], [d, 0.25]]) {
+    m.importResult(bundle.id, reverseReceipt(fakeResults(f, bundle, offset)));
+    m.confirm(bundle.id, true);
+  }
+  const reopened = new ResearchExperiments(f.store);
+  assert.deepEqual(reopened.snapshot().claims, [selected]);
+  assert.throws(() => reopened.lockClaim(draft), /尚未提交或回收/);
+  const result = reopened.checkClaim(selected.id);
+  assert.equal(result.status, 'not-met');
+  assert.deepEqual([result.overall.status, result.overall.improvement], ['met', 0.5]);
+  assert.deepEqual([result.stress.status, result.stress.improvement], ['not-met', -0.25]);
+  assert.deepEqual(result.stress.pairs.map(row => row.seed), [1, 2, 3]);
+  const metadata = path.join(f.root, d.archiveReference, '..', 'bundle.json');
+  const bRecord = JSON.parse(fs.readFileSync(metadata)); bRecord.results.mean = 0; fs.writeFileSync(metadata, JSON.stringify(bRecord));
+  assert.equal(reopened.checkClaim(selected.id).stress.improvement, -0.25, 'claim uses receipt values, not cached averages');
+  fs.appendFileSync(path.join(f.root, d.archiveReference, '..', 'receipts', 'seed-1.log'), 'changed');
+  assert.equal(reopened.checkClaim(selected.id).status, 'insufficient');
+  const other = new ResearchExperiments(fixture().store);
+  assert.equal(other.snapshot().claims.length, 0);
+  assert.throws(() => other.checkClaim(selected.id), /这个项目没有/);
+});
+
 test('experiment bundle includes a valid tar, immutable approved code and a working offline Python manifest check', async () => {
   const f = fixture(); const p = f.implement(); const m = new ResearchExperiments(f.store); const b = await m.prepare(p.id, plan());
   const archive = zlib.gunzipSync(fs.readFileSync(path.join(f.root, b.archiveReference))); assert.equal(archive.subarray(257, 262).toString(), 'ustar'); assert(archive.includes(Buffer.from('run_experiment.py')));

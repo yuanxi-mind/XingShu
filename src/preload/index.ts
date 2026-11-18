@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import type { ResearchChange, ResearchExperimentInput, ResearchFile, ResearchPreview, ResearchRun, ResearchRunInput, ResearchState } from '../shared/research';
 import type { BenchmarkInput, BenchmarkRun, BenchmarkSnapshot } from '../shared/researchBenchmark';
-import type { EvidenceGraph, ExperimentBundle, ExperimentPlan, ExperimentSnapshot, ResearchMemoryHit, ResearchServer } from '../shared/researchIntelligence';
+import type { EvidenceGraph, ExperimentBundle, ExperimentClaim, ExperimentClaimInput, ExperimentClaimResult, ExperimentPlan, ExperimentSnapshot, ResearchMemoryHit, ResearchServer } from '../shared/researchIntelligence';
 import type { ContinuationInfo } from '../main/researchJournal';
 import type { AgentProvider } from '../shared/agentProvider';
 import type { HireManifest } from '../shared/hire';
@@ -703,6 +703,8 @@ const api = {
   apiCollabExperimentCancel: (projectId: string, id: string, consent: boolean): Promise<ExperimentBundle> => ipcRenderer.invoke('apiCollab:experimentCancel', projectId, id, consent),
   apiCollabExperimentCollect: (projectId: string, id: string): Promise<ExperimentBundle> => ipcRenderer.invoke('apiCollab:experimentCollect', projectId, id),
   apiCollabExperimentConfirm: (projectId: string, id: string, consent: boolean): Promise<ExperimentBundle> => ipcRenderer.invoke('apiCollab:experimentConfirm', projectId, id, consent),
+  apiCollabExperimentLockClaim: (projectId: string, input: ExperimentClaimInput): Promise<ExperimentClaim> => ipcRenderer.invoke('apiCollab:experimentLockClaim', projectId, input),
+  apiCollabExperimentCheckClaim: (projectId: string, id: string): Promise<ExperimentClaimResult> => ipcRenderer.invoke('apiCollab:experimentCheckClaim', projectId, id),
   apiCollabExperimentCompare: (projectId: string, a: string, b: string): Promise<{ comparable: boolean; reasons: string[]; delta?: number }> => ipcRenderer.invoke('apiCollab:experimentCompare', projectId, a, b),
   apiCollabExperimentImport: (projectId: string, id: string): Promise<ExperimentBundle | null> => ipcRenderer.invoke('apiCollab:experimentImport', projectId, id),
   apiCollabExperimentChooseKey: (projectId: string): Promise<string | null> => ipcRenderer.invoke('apiCollab:experimentChooseKey', projectId),

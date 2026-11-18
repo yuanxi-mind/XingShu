@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { agentApiMode, type ProjectSnapshot } from '@shared/apiCollab';
 import type { ResearchState } from '@shared/research';
 import { BENCHMARK_TASKS, type BenchmarkInput, type BenchmarkRun, type BenchmarkSnapshot } from '@shared/researchBenchmark';
-import type { EvidenceGraph, ExperimentBundle, ExperimentPlan, ExperimentSnapshot, ResearchMemoryHit, ResearchServer } from '@shared/researchIntelligence';
+import type { EvidenceGraph, ExperimentBundle, ExperimentClaimInput, ExperimentClaimPair, ExperimentClaimResult, ExperimentPlan, ExperimentSnapshot, ResearchMemoryHit, ResearchServer } from '@shared/researchIntelligence';
 import type { ContinuationInfo } from '../../main/researchJournal';
 import { AgentAvatar } from './AgentAvatar';
 import { IconButton } from './NextChat';
@@ -94,11 +94,91 @@ export function ExperimentPanel({ projectId, snapshot, open, research, refreshRe
     const created = await window.cth.apiCollabExperimentPrepare(projectId, proposal, { ...plan, args: args as string[], seeds: seeds.split(/[,，\s]+/u).filter(Boolean).map(Number) }); setSelected(created.id);
   };
   return <section className="rt-panel" hidden={!open} aria-label="可复现实验"><header className="rw-section-heading"><div><span className="rw-eyebrow">同一份代码，同一组运行条件</span><h3>可复现实验</h3><p>生成实验包 → 手动运行或批准服务器提交 → 核验结果 → 人工确认。Agent不能自行提交训练。</p></div><IconButton text="刷新实验包" icon="reload" bordered disabled={f.busy} onClick={() => void f.work(load)} /></header>{f.feedback}
+    {state && <InnovationClaims key={projectId} projectId={projectId} state={state} research={research} reload={load} />}
     <form className="rt-form" onSubmit={e => { e.preventDefault(); act(prepare, '实验包已生成。可以定位压缩包上传服务器，或配置下方SSH连接。'); }}><h4>准备代码与运行条件</h4><label>要运行的代码<select aria-label="要运行的代码" value={proposal} onChange={e => setProposal(e.target.value)}><option value="__baseline__">当前公共版本（用于baseline对照）</option>{research?.proposals.filter(p => p.approval && p.reviews.at(-1)?.passed && !p.publishedVersionId).map(p => <option key={p.id} value={p.id}>已核查方案 · {p.title}</option>)}</select></label><div className="rt-fields"><label>训练入口<input value={plan.entrypoint} onChange={e => patch({ entrypoint: e.target.value })} /></label><label>依赖文件<input value={plan.dependencyFile} onChange={e => patch({ dependencyFile: e.target.value })} /></label><label>数据集名称<input value={plan.dataset} onChange={e => patch({ dataset: e.target.value })} required /></label><label>划分标识<input value={plan.split} onChange={e => patch({ split: e.target.value })} placeholder="例如：official-test" required /></label><label>划分清单文件（代码内，可选）<input value={plan.splitManifest ?? ''} onChange={e => patch({ splitManifest: e.target.value })} placeholder="如splits/test.txt；对照核验需要" /></label><label>实验 seed<input value={seeds} onChange={e => setSeeds(e.target.value)} placeholder="1,2,3" /></label></div><label>训练参数（JSON数组，不执行shell拼接）<textarea rows={2} value={argumentsText} onChange={e => setArgumentsText(e.target.value)} placeholder={'["--config","configs/cd.yaml"]'} /></label><label>服务器预装镜像的完整 digest<input value={plan.image} onChange={e => patch({ image: e.target.value })} placeholder="你的镜像@sha256:64位校验值" required /></label><p className="rt-hint">服务器需有Linux、Python3、Docker及已安装依赖的指定镜像。容器禁止联网，只读挂载数据集到/datasets；本功能不会自动安装依赖。</p><details className="rw-details"><summary>指标格式与资源上限</summary><div className="rt-fields"><label>指标JSON文件<input value={plan.metricPath} onChange={e => patch({ metricPath: e.target.value })} /></label><label>指标键名<input value={plan.metricName} onChange={e => patch({ metricName: e.target.value })} /></label><label>指标单位<select value={plan.metricUnit ?? 'percent'} onChange={e => patch({ metricUnit: e.target.value as ExperimentPlan['metricUnit'] })}><option value="percent">百分数（0–100）</option><option value="fraction">比例（0–1）</option><option value="number">其他数值</option></select></label><label>seed参数（可留空）<input value={plan.seedFlag} onChange={e => patch({ seedFlag: e.target.value })} /></label>{([{ key: 'timeoutSeconds', name: '每seed最长秒数' }, { key: 'cpus', name: 'CPU核数' }, { key: 'memoryGb', name: '内存上限GB' }] as const).map(x => <label key={x.key}>{x.name}<input type="number" min={1} value={plan[x.key]} onChange={e => patch({ [x.key]: Number(e.target.value) })} /></label>)}<label>GPU编号（不用请留空）<input value={plan.gpuDevices} onChange={e => patch({ gpuDevices: e.target.value })} /></label></div><p className="rt-hint">训练程序须将数值指标写入工作目录中的JSON，如 {JSON.stringify({ [plan.metricName || 'F1']: 90.5 })}。包中保留完整代码、依赖文件和运行清单，请检查代码内是否有私人内容。</p></details><div className="rt-actions"><IconButton text="生成可复现实验包" buttonType="submit" type="primary" className="rw-primary" disabled={f.busy || !research?.currentVersionId} /></div></form>
     <details className="rt-server"><summary>服务器连接（可选；不配置也能导出实验包）</summary><p className="rt-hint">仅使用D盘SSH私钥；主机指纹需向服务器管理员核实。连接与私钥不向Agent开放。仅此项目保存连接，不继承到新项目。</p><div className="rt-fields">{([{ key: 'host', name: 'SSH主机' }, { key: 'username', name: '非root用户名' }, { key: 'hostFingerprint', name: '已核实的主机SHA256指纹' }, { key: 'remoteRoot', name: '服务器实验根目录' }, { key: 'datasetRoot', name: '服务器数据集目录（只读挂载）' }] as const).map(x => <label key={x.key}>{x.name}<input value={server[x.key]} onChange={e => setServer({ ...server, [x.key]: e.target.value })} /></label>)}<label>SSH端口<input type="number" value={server.port} onChange={e => setServer({ ...server, port: Number(e.target.value) })} /></label></div><label>本机D盘私钥<input value={server.identityFile} readOnly /></label><div className="rt-actions"><IconButton text="选择D盘私钥" bordered onClick={() => void f.work(async () => { const key = await window.cth.apiCollabExperimentChooseKey(projectId); if (key) setServer({ ...server, identityFile: key }); })} /><IconButton text="保存服务器连接" bordered disabled={f.busy} onClick={() => act(() => window.cth.apiCollabExperimentSaveServer(projectId, server), '服务器连接已保存，尚未提交训练。')} /><IconButton text="核验指纹并测试连接" bordered disabled={f.busy || !state?.server} onClick={() => act(async () => { const message = await window.cth.apiCollabExperimentVerifyServer(projectId); if (!message) throw new Error('没有连接回执'); }, '主机指纹、Python和Docker检查通过；没有提交训练。')} /></div></details>
     <section className="rt-results"><h4>实验包与结果</h4>{!state?.bundles.length ? <div className="rt-empty">尚未生成实验包。原始代码始终保留。</div> : <><label>查看实验包<select aria-label="查看实验包" value={selected} onChange={e => { setSelected(e.target.value); setApproval(''); }}>{state.bundles.map(x => <option key={x.id} value={x.id}>{date(x.createdAt)} · {x.proposalId.startsWith('baseline:') ? '公共版本对照' : research?.proposals.find(p => p.id === x.proposalId)?.title} · {labels[x.status]}</option>)}</select></label>{b && <article className="rt-bundle"><header><strong>{labels[b.status]}</strong><small>{b.id}</small></header><p>{b.plan.dataset} / {b.plan.split} · seed={b.plan.seeds.join(', ')} · 每seed最多{b.plan.timeoutSeconds}秒</p><p className="rt-hint">{b.note || '尚未提交训练。导出不会调用模型。'}</p><details><summary>代码、环境与清单校验值</summary><code>代码：{b.codeHash}</code><code>清单：{b.manifestHash}</code><code>镜像：{b.plan.image}</code><code>划分清单：{b.splitHash || '未提供；不能自动确认对照可比'}</code></details><div className="rt-actions"><IconButton text="定位实验压缩包" icon="folder" bordered onClick={() => void f.work(() => reveal(snapshot.projectRoot, b.archiveReference))} /><IconButton text="导入服务器结果" bordered disabled={f.busy || Boolean(b.results)} onClick={() => act(() => window.cth.apiCollabExperimentImport(projectId, b.id))} />{b.status === 'prepared' && <IconButton text="准备提交服务器" bordered disabled={f.busy || !state.server} onClick={() => { setApproval('submit'); setAgreed(false); }} />}{b.approvedAt && <><IconButton text="查询服务器状态" bordered disabled={f.busy} onClick={() => act(() => window.cth.apiCollabExperimentRefresh(projectId, b.id))} /><IconButton text="收回日志和指标" bordered disabled={f.busy} onClick={() => act(() => window.cth.apiCollabExperimentCollect(projectId, b.id))} /><IconButton text="停止服务器实验" bordered disabled={f.busy} onClick={() => { setApproval('cancel'); setAgreed(false); }} /></>}</div>{approval && <section className="rt-confirm"><h4>{approval === 'submit' ? '确认本次服务器训练' : '确认停止本次服务器训练'}</h4><p>{b.plan.seeds.length}个seed，最多{(b.plan.seeds.length * b.plan.timeoutSeconds / 3600).toFixed(2)}小时；CPU {b.plan.cpus}核、内存{b.plan.memoryGb}GB、GPU {b.plan.gpuDevices || '无'}。提交后不能因断线直接重提。</p><label className="rt-check"><input type="checkbox" checked={agreed} onChange={e => setAgreed(e.target.checked)} />我已核对服务器、代码和资源，批准本次操作</label><div className="rt-actions"><IconButton text="返回" bordered onClick={() => setApproval('')} /><IconButton text={approval === 'submit' ? '确认提交训练' : '确认停止训练'} type="primary" className="rw-primary" disabled={!agreed || f.busy} onClick={() => act(async () => { if (approval === 'submit') await window.cth.apiCollabExperimentSubmit(projectId, b.id, true); else await window.cth.apiCollabExperimentCancel(projectId, b.id, true); setApproval(''); setAgreed(false); })} /></div></section>}{b.results && <><p className="rt-result-number">{b.results.complete ? `${b.plan.metricName} 均值 ${b.results.mean.toFixed(4)}` : '部分seed失败／未完成'}<small>样本标准差 {b.results.values.length > 1 ? b.results.standardDeviation.toFixed(4) : '未知（不足2次）'} · 已取得{b.results.values.length}/{b.plan.seeds.length}组指标</small></p>{b.confirmedAt ? <p className="rt-notice">你已确认此观察。清单核验不等于独立第三方复跑证明。</p> : <div className="rt-confirm"><p>我已核对代码、数据划分、日志和指标，确认它们对应本次实验。</p><IconButton text="人工确认包内实验结果" bordered disabled={f.busy} onClick={() => act(() => window.cth.apiCollabExperimentConfirm(projectId, b.id, true))} /></div>}</>}</article>}</>}
       <form className="rt-form" onSubmit={e => { e.preventDefault(); void f.work(async () => setComparison(await window.cth.apiCollabExperimentCompare(projectId, left, right))); }}><h4>多seed对照核验</h4><div className="rt-fields">{([{ value: left, set: setLeft, name: '对照实验包' }, { value: right, set: setRight, name: '候选实验包' }]).map(x => <label key={x.name}>{x.name}<select aria-label={x.name} value={x.value} onChange={e => { x.set(e.target.value); setComparison(null); }}><option value="">请选择实验包</option>{state?.bundles.filter(x => x.results).map(b => <option key={b.id} value={b.id}>{b.proposalId.startsWith('baseline:') ? '公共版本' : research?.proposals.find(p => p.id === b.proposalId)?.title} · {date(b.createdAt)}</option>)}</select></label>)}</div><IconButton text="核对可比条件并计算差值" buttonType="submit" bordered disabled={f.busy || !left || !right} />{comparison && <p className={comparison.comparable ? 'rt-notice' : 'rt-error'}>{comparison.comparable ? `已核对记录中的数据划分清单、seed、镜像、依赖和配置；均值差=${comparison.delta!.toFixed(4)}（使用原指标单位）。这不是统计显著性或无数据泄漏证明。` : `暂不能直接归因于改进：${comparison.reasons.join('；')}`}</p>}</form>
     </section>
+  </section>;
+}
+
+type ClaimLane = 'overall' | 'stress';
+const claimLanes = [{ key: 'overall', label: '总评' }, { key: 'stress', label: '反例' }] as const;
+const emptyClaimPair = (): ExperimentClaimPair => ({ baselineId: '', candidateId: '', direction: 'higher', minimumGain: 0 });
+const emptyClaim = (): ExperimentClaimInput => ({ hypothesis: '', overall: emptyClaimPair(), stress: emptyClaimPair() });
+const claimNumber = new Intl.NumberFormat('zh-CN', { maximumSignificantDigits: 6 });
+const claimLabels = { met: '两项达到预登记判据', 'not-met': '未达到预登记判据', insufficient: '还缺可比证据' };
+
+function InnovationClaims({ projectId, state, research, reload }: {
+  projectId: string; state: ExperimentSnapshot; research: ResearchState | null; reload(): Promise<void>;
+}) {
+  const [draft, setDraft] = useState(emptyClaim);
+  const [selected, setSelected] = useState('');
+  const [assessment, setAssessment] = useState<ExperimentClaimResult | null>(null);
+  const f = useFeedback();
+  const claim = state.claims.find(c => c.id === selected) ?? state.claims[0];
+  const result = assessment?.id === claim?.id ? assessment : null;
+  const baselines = state.bundles.filter(b => b.proposalId.startsWith('baseline:') && b.splitHash);
+  const locked = new Set(state.claims.flatMap(c => [c.overall.candidateId, c.stress.candidateId]));
+  const candidates = state.bundles.filter(b => !b.proposalId.startsWith('baseline:') && b.status === 'prepared' && b.splitHash && !locked.has(b.id));
+  const bundleText = (b: ExperimentBundle): string => {
+    const name = b.proposalId.startsWith('baseline:') ? '公共对照' : (research?.proposals.find(p => p.id === b.proposalId)?.title ?? '候选代码');
+    return `${name} · ${b.plan.split} · ${b.plan.metricName} · ${date(b.createdAt)}`;
+  };
+  const patch = (key: ClaimLane, value: Partial<ExperimentClaimPair>): void => setDraft(d => ({ ...d, [key]: { ...d[key], ...value } }));
+  useEffect(() => { setAssessment(null); }, [state]);
+  const ready = draft.hypothesis.trim() && claimLanes.every(({ key }) => {
+    const pair = draft[key]; return pair.baselineId && pair.candidateId && pair.minimumGain > 0;
+  });
+  return <section className="rt-form rt-claim" aria-label="反例检验卡">
+    <h4>反例检验卡</h4>
+    <p className="rt-hint">总分上升后，专门挑出的难例也改善了吗？用同一版对照代码和候选代码分别跑总评与反例，在候选结果回收前锁定判据。</p>
+    {claim && <>
+      <label>已登记的检验卡<select aria-label="已登记的检验卡" value={claim.id} onChange={e => { setSelected(e.target.value); setAssessment(null); }}>
+        {state.claims.map(c => <option key={c.id} value={c.id}>{c.hypothesis} · {date(c.lockedAt)}</option>)}
+      </select></label>
+      <div className="rt-claim-summary">
+        <p className="rt-hint">锁定于 {date(claim.lockedAt)}</p>
+        {result && <p role="status" data-status={result.status}>{claimLabels[result.status]}</p>}
+      </div>
+      <ul className="rt-claim-results">{claimLanes.map(({ key, label }) => {
+        const pair = claim[key]; const check = result?.[key];
+        const unit = pair.metricUnit === 'percent' ? ' 个百分点' : '';
+        const change = (check?.improvement ?? 0) * (pair.direction === 'higher' ? 1 : -1);
+        const direction = change > 0 ? '上升' : change < 0 ? '下降' : '无变化';
+        return <li key={key}>
+          <p className="rt-claim-metric"><strong>{label} · {pair.metricName}</strong> <span>{pair.dataset} / {pair.split}</span></p>
+          <p className="rt-hint">要求{pair.direction === 'higher' ? '提高' : '降低'}至少 {claimNumber.format(pair.minimumGain)}{unit}</p>
+          {check && <p data-status={check.status}>{check.status === 'insufficient' ? check.reason : `${check.status === 'met' ? '达标' : '未达标'} · 实际${direction}${change === 0 ? '' : ` ${claimNumber.format(Math.abs(change))}${unit}`}`}</p>}
+          {check?.pairs && <small>基线 → 候选：{check.pairs.map(p => <span key={p.seed}>seed {p.seed}: {claimNumber.format(p.baseline)} → {claimNumber.format(p.candidate)}</span>)}</small>}
+        </li>;
+      })}</ul>
+      <div className="rt-actions"><IconButton text="核验反例检验卡" disabled={f.busy} bordered onClick={() => {
+        setAssessment(null); void f.work(async () => setAssessment(await window.cth.apiCollabExperimentCheckClaim(projectId, claim.id)));
+      }} />{result && <span className="rt-hint">按已确认的回执计算，供你判断是否采用这条结论。</span>}</div>
+    </>}
+    <details><summary>登记新卡</summary>
+      <form onSubmit={e => { e.preventDefault(); void f.work(async () => {
+        const c = await window.cth.apiCollabExperimentLockClaim(projectId, draft);
+        setDraft(emptyClaim()); setSelected(c.id); await reload();
+      }, '判据已锁定。候选实验运行并确认后即可回来核验。'); }}>
+        <p className="rt-hint">先在下方准备四个实验包：总评和反例各一对。反例用另一份划分清单；每对的指标、单位、随机种子和运行条件须一致。</p>
+        <label>要检验的主张<input placeholder="例如：抑制季节变化造成的误报" value={draft.hypothesis} maxLength={500} onChange={e => setDraft(d => ({ ...d, hypothesis: e.target.value }))} required /></label>
+        {claimLanes.map(({ key, label }) => {
+          const pair = draft[key]; const baseline = baselines.find(b => b.id === pair.baselineId);
+          const matches = (b: ExperimentBundle): boolean => !baseline || (b.splitHash === baseline.splitHash && b.plan.metricName === baseline.plan.metricName && b.plan.metricUnit === baseline.plan.metricUnit);
+          return <fieldset key={key}><legend>{label}</legend><div className="rt-fields">
+            <label>{label}公共对照包<select aria-label={`${label}公共对照包`} value={pair.baselineId} onChange={e => patch(key, { baselineId: e.target.value, candidateId: '' })} required><option value="">选择公共对照包</option>{baselines.map(b => <option key={b.id} value={b.id}>{bundleText(b)}</option>)}</select></label>
+            <label>{label}候选包<select aria-label={`${label}候选包`} value={pair.candidateId} onChange={e => patch(key, { candidateId: e.target.value })} required><option value="">选择尚未提交的候选包</option>{candidates.filter(matches).map(b => <option key={b.id} value={b.id}>{bundleText(b)}</option>)}</select></label>
+            <label>{label}指标方向<select aria-label={`${label}指标方向`} value={pair.direction} onChange={e => patch(key, { direction: e.target.value === 'lower' ? 'lower' : 'higher' })}><option value="higher">越高越好</option><option value="lower">越低越好</option></select></label>
+            <label>{label}最小改善{baseline?.plan.metricUnit === 'percent' ? '（百分点）' : ''}<input type="number" step="any" min="0" required value={pair.minimumGain || ''} onChange={e => patch(key, { minimumGain: Number(e.target.value) })} placeholder="0.5" /></label>
+          </div></fieldset>;
+        })}
+        <div className="rt-actions"><IconButton text="锁定总评与反例判据" buttonType="submit" type="primary" className="rw-primary" disabled={f.busy || !ready} /></div>
+      </form>
+    </details>
+    {f.feedback}
   </section>;
 }
 
