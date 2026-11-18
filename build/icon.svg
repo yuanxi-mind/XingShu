@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="tile" x1="64" y1="36" x2="436" y2="490" gradientUnits="userSpaceOnUse"><stop stop-color="#262846"/><stop offset=".52" stop-color="#12172C"/><stop offset="1" stop-color="#0B1020"/></linearGradient>
+    <radialGradient id="halo"><stop stop-color="#9475FF" stop-opacity=".55"/><stop offset="1" stop-color="#7060F6" stop-opacity="0"/></radialGradient>
+    <linearGradient id="orbit" x1="78" y1="347" x2="443" y2="131" gradientUnits="userSpaceOnUse"><stop stop-color="#6B5DDE"/><stop offset=".5" stop-color="#BEACFF"/><stop offset="1" stop-color="#62E5F5"/></linearGradient>
+    <linearGradient id="star" x1="216" y1="146" x2="312" y2="365" gradientUnits="userSpaceOnUse"><stop stop-color="white"/><stop offset=".5" stop-color="#E0DCFF"/><stop offset="1" stop-color="#9F8AFF"/></linearGradient>
+    <filter id="glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="12"/></filter>
+  </defs>
+  <rect x="12" y="12" width="488" height="488" rx="118" fill="url(#tile)"/>
+  <rect x="13" y="13" width="486" height="486" rx="117" stroke="#C9C8FF" stroke-opacity=".2" stroke-width="2"/>
+  <circle cx="258" cy="256" r="224" fill="url(#halo)"/>
+  <ellipse cx="256" cy="264" rx="186" ry="83" transform="rotate(-32 256 264)" stroke="url(#orbit)" stroke-width="12" opacity=".16" filter="url(#glow)"/>
+  <ellipse cx="256" cy="264" rx="186" ry="83" transform="rotate(-32 256 264)" stroke="url(#orbit)" stroke-width="9"/>
+  <path d="M256 126C270 212 290 234 365 254C290 274 270 296 256 382C242 296 222 274 147 254C222 234 242 212 256 126Z" fill="#9F85FF" opacity=".5" filter="url(#glow)"/>
+  <path d="M256 126C270 212 290 234 365 254C290 274 270 296 256 382C242 296 222 274 147 254C222 234 242 212 256 126Z" fill="url(#star)"/>
+  <circle cx="409" cy="162" r="16" fill="#91F1FF"/>
+  <circle cx="409" cy="162" r="26" fill="#60DCF6" opacity=".32" filter="url(#glow)"/>
+</svg>

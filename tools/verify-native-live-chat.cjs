@@ -1,0 +1,135 @@
+const qa = require('./qa-paths.cjs');
+// Packaged Electron + real IPC, isolated D: fixture, deferred in-process fetch.
+const { _electron } = require('playwright-core');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const output = qa.output('native-live-chat');
+const root = output + '/native-fixture-' + Date.now() + '-' + process.pid;
+const executablePath = qa.executable();
+(async () => {
+  const env = { ...process.env, MULTI_AGENT_ROOT: root, TEMP: output + '/temp', TMP: output + '/temp', DO_NOT_TRACK: '1' };
+  delete env.ELECTRON_RUN_AS_NODE;
+  fs.mkdirSync(root, { recursive: true });
+  const desktop = await _electron.launch({ executablePath, args: qa.args(executablePath), cwd: root, env, timeout: 60000 });
+  const errors = [];
+  try {
+    await desktop.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].setContentSize(1440, 900);
+      BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
+      BrowserWindow.getAllWindows()[0].hide();
+      globalThis.__qaRequests = [];
+      globalThis.fetch = (url, init) => {
+        if (String(url) !== 'https://offline.invalid/v1/chat/completions') throw new Error('Unexpected URL blocked by offline native QA');
+        const input = JSON.parse(init.body);
+        if (input.stream) {
+          let controller;
+          const body = new ReadableStream({ start(value) { controller = value; } });
+          globalThis.__qaRequests.push({ model: input.model, controller });
+          return Promise.resolve(new Response(body, { headers: { 'Content-Type': 'text/event-stream' } }));
+        }
+        return new Promise((resolve) => globalThis.__qaRequests.push({ model: input.model, resolve }));
+      };
+    });
+    const page = await desktop.firstWindow();
+    page.on('pageerror', (e) => errors.push(e.message));
+    await page.getByText('所有项目', { exact: true }).first().waitFor();
+    const project = await page.evaluate(async () => {
+      const project = await window.cth.apiCollabCreateProject('实时消息验收');
+      await window.cth.apiCollabSaveProvider({ id: 'offline', name: '离线测试', protocol: 'openai-compatible', baseUrl: 'https://offline.invalid/v1', apiKeyRef: '', stream: true, enabled: true, timeoutMs: 120000, retryPolicy: { maxRetries: 0 } });
+      await window.cth.apiCollabSetSecret('offline', 'not-a-real-key');
+      for (const [id, displayName] of [['gpt', 'GPT'], ['claude', 'Claude']]) await window.cth.apiCollabSaveAgent({ id, displayName, providerId: 'offline', model: 'offline-' + id, enabled: true }, project.id);
+      return project;
+    });
+    await page.reload();
+    await page.getByRole('button', { name: project.name, exact: true }).click();
+    const input = page.getByRole('textbox', { name: '消息输入框', exact: true });
+    await page.getByRole('button', { name: '选择发言对象', exact: true }).hover();
+    await page.getByRole('button', { name: '顺序与职责', exact: false }).click();
+    const dialog = page.getByRole('dialog', { name: '本轮发言设置', exact: true });
+    await dialog.getByRole('checkbox', { name: '@GPT', exact: true }).check();
+    await dialog.getByRole('checkbox', { name: '@Claude', exact: true }).check();
+    assert.equal(await dialog.getByRole('textbox', { name: '发言顺序', exact: true }).inputValue(), '');
+    await dialog.getByRole('textbox', { name: '发言顺序', exact: true }).fill('GPT、Claude');
+    await dialog.getByRole('button', { name: '完成', exact: true }).click();
+    await input.fill('请按顺序检查 baseline，讨论下一步实验。\n（离线界面验收，不调用真实模型）');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    await page.locator('.tz-message-human').filter({ hasText: '请按顺序检查 baseline' }).waitFor({ timeout: 1000 });
+    await page.getByText('等待 GPT 回复', { exact: true }).waitFor();
+    assert.equal(await desktop.evaluate(() => globalThis.__qaRequests.length), 1);
+    await desktop.evaluate(() => globalThis.__qaRequests[0].controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"先检查 baseline 是否复现。"}}]}\n\n')));
+    await page.locator('.tz-message[data-state="streaming"]').waitFor();
+    assert.equal(await page.locator('.tz-stream-caret').count(), 1);
+    await page.getByRole('button', { name: '展开伙伴栏', exact: true }).click();
+    await page.screenshot({ path: output + '/tongzhou-native-streaming.png', scale: 'css' });
+    await page.locator('.tz-header-members').click();
+    const respond = async (content, model) => desktop.evaluate((_electron, { content, model }) => {
+      const index = model ? globalThis.__qaRequests.findIndex(request => request.model === model) : 0;
+      const next = index < 0 ? undefined : globalThis.__qaRequests.splice(index, 1)[0];
+      if (!next) throw new Error('No pending mock request');
+      if (next.controller) {
+        next.controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\ndata: [DONE]\n\n'));
+        next.controller.close();
+      } else next.resolve(new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }, { content, model });
+    await input.fill('下一轮草稿：请说明消融实验设计。');
+    await respond('**先验证假设，再决定改进方向。**\n\n这是一条离线验收回复。\n\n1. 确认 baseline 能复现。\n2. 固定划分、种子与评价指标。\n3. 每次只验证一个改动，保存结果。');
+    await page.getByText('等待 Claude 回复', { exact: true }).waitFor();
+    assert.equal(await page.locator('.tz-message-human').count(), 1);
+    assert.equal(await page.locator('.tz-message:not(.tz-message-human)').count(), 1);
+    assert.equal(await input.inputValue(), '下一轮草稿：请说明消融实验设计。');
+    await page.screenshot({ path: output + '/tongzhou-native-live-reply.png', scale: 'css' });
+    await respond('已完成离线验收。请结合真实实验记录判断质量。');
+    await page.waitForFunction(() => !document.querySelector('.tz-live-reply'));
+    assert.equal(await page.locator('.tz-message:not(.tz-message-human)').count(), 2);
+    await page.mouse.move(1050, 150);
+    await page.evaluate(() => Promise.all(document.getAnimations().filter(animation => animation.effect?.getTiming().iterations !== Infinity).map(animation => animation.finished.catch(() => {}))));
+    await page.screenshot({ path: output + '/xingshu-chat-installed.png', scale: 'css' });
+    await page.getByRole('button', { name: '选择发言对象', exact: true }).hover();
+    await page.getByRole('button', { name: '顺序与职责', exact: false }).click();
+    await dialog.getByRole('button', { name: '恢复同时回复', exact: true }).click();
+    assert.equal(await dialog.getByRole('textbox', { name: '发言顺序', exact: true }).inputValue(), '');
+    await dialog.getByRole('button', { name: '完成', exact: true }).click();
+    await page.getByText('发言方式：同时接收，谁先完成谁先回复', { exact: true }).waitFor();
+    await input.fill('两位同时分析，不指定发言顺序。');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    await page.locator('.tz-message-human').filter({ hasText: '两位同时分析' }).waitFor({ timeout: 1000 });
+    await page.getByText('等待 GPT 回复', { exact: true }).waitFor();
+    await page.getByText('等待 Claude 回复', { exact: true }).waitFor();
+    assert.equal(await desktop.evaluate(() => globalThis.__qaRequests.length), 2);
+    await desktop.evaluate(() => {
+      for (const request of globalThis.__qaRequests) request.controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({ choices: [{ delta: { content: request.model === 'offline-gpt' ? 'GPT独立内容。' : 'Claude独立内容。' } }] }) + '\n\n'));
+    });
+    await page.waitForFunction(() => document.querySelectorAll('.tz-message[data-state="streaming"]').length === 2);
+    const streams = page.locator('.tz-message[data-state="streaming"]');
+    assert.equal(await streams.filter({ hasText: 'GPT独立内容。' }).count(), 1);
+    assert.equal(await streams.filter({ hasText: 'Claude独立内容。' }).count(), 1);
+    assert.equal(await streams.filter({ hasText: 'GPT独立内容。' }).filter({ hasText: 'Claude独立内容。' }).count(), 0);
+    await page.screenshot({ path: output + '/parallel-streaming.png', scale: 'css' });
+    await respond('Claude先完成。', 'offline-claude');
+    await page.locator('.tz-message[data-state="complete"] .markdown-body').getByText('Claude独立内容。Claude先完成。', { exact: true }).waitFor();
+    assert.equal(await streams.count(), 1);
+    assert.equal(await streams.filter({ hasText: 'GPT独立内容。' }).count(), 1);
+    await page.screenshot({ path: output + '/fast-reply-while-slow-pending.png', scale: 'css' });
+    await respond('GPT后完成。', 'offline-gpt');
+    await page.waitForFunction(() => !document.querySelector('.tz-live-reply'));
+    const expectedOrder = ['claude', 'gpt'];
+    assert.deepEqual(await page.evaluate(async id => (await window.cth.apiCollabSnapshot(id)).workgroup.slice(-2).map(message => message.senderId), project.id), expectedOrder);
+    await page.reload(); await page.getByRole('button', { name: project.name, exact: true }).click();
+    assert.deepEqual(await page.evaluate(async id => (await window.cth.apiCollabSnapshot(id)).workgroup.slice(-2).map(message => message.senderId), project.id), expectedOrder);
+    await page.getByRole('button', { name: 'GPT', exact: true }).click();
+    await input.fill('私聊也应立即显示。');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    await page.locator('.tz-message-human').filter({ hasText: '私聊也应立即显示。' }).waitFor({ timeout: 1000 });
+    await page.getByText('等待 GPT 回复', { exact: true }).waitFor();
+    await respond('私聊 IPC 实时回复测试通过。');
+    await page.waitForFunction(() => !document.querySelector('.tz-live-reply'));
+    await page.locator('.tz-message[data-state="complete"] .markdown-body').getByText('私聊 IPC 实时回复测试通过。', { exact: true }).waitFor();
+    assert.equal(await page.locator('.tz-message-human').count(), 1);
+    assert.deepEqual(errors, []);
+    const menuHidden = await desktop.evaluate(({ BrowserWindow }) => !BrowserWindow.getAllWindows()[0].isMenuBarVisible());
+    assert.equal(menuHidden, true);
+    const report = { executablePath, fixtureRoot: root, realProviderRequests: 0, groupHumanBeforeProviderReply: true, groupFirstReplyBeforeSecond: true, nativeStreamingBeforeCompletion: true, parallelStartedBeforeReply: true, multiStreamIsolated: true, fastReplyVisibleWhileSlowPending: true, completionOrderPreservedAfterReload: true, nativeMenuHidden: menuHidden, privateHumanBeforeProviderReply: true, privateRealtimeReply: true, noDuplicates: true, draftPreserved: true, rendererErrors: errors };
+    fs.writeFileSync(output + '/native-live-report.json', JSON.stringify(report, null, 2));
+    console.log(JSON.stringify(report, null, 2));
+  } finally { await desktop.close(); }
+})().catch((e) => { console.error(e); process.exitCode = 1; });

@@ -1,0 +1,65 @@
+# Dependencies and generated builds
+node_modules/
+out/
+dist/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# Local application state — source repositories must never contain these
+_runtime/
+_secrets/
+_app/
+_publish/
+WorkGroup/
+AgentChats/
+tasks/
+runs/
+project.json
+*.db
+*.db-*
+*.sqlite*
+*.jsonl
+*.log
+*.dmp
+*.bak
+*.backup
+*.zip
+*.tar
+*.tar.gz
+
+# Credentials, SSH and signing material
+.env
+.env.*
+!.env.example
+.npmrc
+.ssh/
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.cer
+*.mobileprovision
+id_rsa*
+id_ed25519*
+api-providers.json
+secrets.json
+credentials.json
+known_hosts
+
+# Local notes, caches and editor state
+PROJECT_CONTEXT.md
+项目上下文.md
+研究项目上下文.md
+IMPLEMENTATION_*.md
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+.worktrees/
+.gstack/
+
+# Only the intentionally generated demo screenshots belong in docs/screenshots.
+playwright-report/
+test-results/

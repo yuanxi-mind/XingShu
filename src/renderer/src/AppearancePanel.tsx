@@ -1,0 +1,13 @@
+import { appearanceForTheme, CHAT_FONTS, DEFAULT_APPEARANCE, type Appearance } from './uiPreferences';
+
+export function AppearancePanel({ value, onChange, onOpenChatBackground }: { value: Appearance; onChange: (appearance: Appearance) => void; onOpenChatBackground?: () => void }) {
+  return <div className="tz-appearance space-y-6">
+    <p className="tz-dialog-intro">把工作空间调成你喜欢的样子。设置会保留到下次打开。</p>
+    <section><h3>界面主题</h3><div className="grid grid-cols-2 gap-3">{[['light', '晨光', '深蓝侧栏 · 明亮聊天'], ['dark', '深空', '深蓝夜色 · 柔和彩光']].map(([theme, title, detail]) => <button key={theme} className={'tz-theme-card tz-theme-' + theme} aria-label={title + '主题'} aria-pressed={value.theme === theme} onClick={() => onChange(appearanceForTheme(value, theme as Appearance['theme']))}><span className="tz-theme-preview"><i /><i /><i /></span><strong>{title}</strong><small>{detail}</small></button>)}</div></section>
+    <section><h3>中文字体</h3><div className="flex flex-wrap gap-2">{[['system', '微软雅黑'], ['heiti', '等线黑体'], ['songti', '宋体'], ['mono', '中文等宽优先']].map(([font, label]) => <button key={font} className="tz-choice" aria-pressed={value.font === font} onClick={() => onChange({ ...value, font: font as Appearance['font'] })}>{label}</button>)}</div><p className="nc-hint">字体用于聊天与输入区；界面统一使用中文无衬线字体。未安装的字体自动回退。</p><label className="tz-range-label" htmlFor="tz-font-size">文字大小 <strong>{value.fontSize} 像素</strong></label><input id="tz-font-size" aria-label="聊天字体大小" className="w-full" type="range" min={12} max={24} step={1} value={value.fontSize} onChange={(event) => onChange({ ...value, fontSize: Number(event.target.value) })} /></section>
+    <section><h3>背景</h3><div className="grid grid-cols-3 gap-2">{[['aurora', '极光'], ['grid', '网格'], ['plain', '素色']].map(([background, label]) => <button key={background} className={'tz-background-choice tz-bg-' + background} aria-label={label + '背景'} aria-pressed={value.background === background} onClick={() => onChange({ ...value, background: background as Appearance['background'] })}><span />{label}</button>)}</div><label className="tz-color-row">聊天背景基色<input aria-label="背景基色" type="color" value={value.backgroundColor} onChange={(event) => onChange({ ...value, backgroundColor: event.target.value })} /></label></section>
+    {onOpenChatBackground && <section><h3>当前聊天图片背景</h3><button className="tz-choice" onClick={onOpenChatBackground}>设置当前聊天背景</button><p className="nc-hint">选择本地图片或项目内图片，仅应用到当前会话。</p></section>}
+    <div className="tz-font-preview" style={{ fontSize: value.fontSize, fontFamily: CHAT_FONTS[value.font] }}>想法在这里汇合，下一步由你决定。<br /><small>从研究假设，到实验结果，再到可靠证据。</small></div>
+    <button className="tz-text-button" onClick={() => onChange({ ...DEFAULT_APPEARANCE })}>恢复默认外观</button>
+  </div>;
+}

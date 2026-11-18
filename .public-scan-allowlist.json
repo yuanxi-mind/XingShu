@@ -1,0 +1,62 @@
+[
+  {
+    "file": "test/agent-exit-record.test.cjs",
+    "rule": "provider-key",
+    "sha256": "f3ec5c30d19df12104cdc5babc5e65eb2402fa8c192d6c68a8826428cc037c43",
+    "reason": "Reviewed upstream synthetic regression fixture or explicit URL-parser example; not a real credential."
+  },
+  {
+    "file": "test/repro/bug-17.repro.cjs",
+    "rule": "slack-token",
+    "sha256": "90476892a1fb831ba360c96b1ddcfe06b017cda4f3bcdd547cf7bd9ad7fed77b",
+    "reason": "Reviewed upstream synthetic regression fixture or explicit URL-parser example; not a real credential."
+  },
+  {
+    "file": "test/voice-messages.test.cjs",
+    "rule": "provider-key",
+    "sha256": "9918de2aff12b7c63eb1dd627763466533287ef70763637587516fba77793707",
+    "reason": "Reviewed upstream synthetic regression fixture or explicit URL-parser example; not a real credential."
+  },
+  {
+    "file": "test/voice-messages.test.cjs",
+    "rule": "provider-key",
+    "sha256": "cbba12be3d95e2fe835134158d8115d94516ed85332006118ce89d7f1aac707e",
+    "reason": "Reviewed upstream synthetic regression fixture or explicit URL-parser example; not a real credential."
+  },
+  {
+    "file": "test/voice-messages.test.cjs",
+    "rule": "github-token",
+    "sha256": "fc25e1a8a3075e9f2e1a457f7b25351671610c2115c3b4d5633458a55e478823",
+    "reason": "Reviewed upstream synthetic regression fixture or explicit URL-parser example; not a real credential."
+  },
+  {
+    "file": "test/voice-messages.test.cjs",
+    "rule": "github-token",
+    "sha256": "97221092b0037c63b60e500531da422e2337dc6c2145d9650862aa5785465e57",
+    "reason": "Reviewed upstream synthetic regression fixture or explicit URL-parser example; not a real credential."
+  },
+  {
+    "file": "test/voice-messages.test.cjs",
+    "rule": "cloud-access-key",
+    "sha256": "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+    "reason": "Reviewed upstream synthetic regression fixture or explicit URL-parser example; not a real credential."
+  },
+  {
+    "file": "test/voice-messages.test.cjs",
+    "rule": "google-api-key",
+    "sha256": "84fd1d944cbf60daa998afa42a9b2235c69e1c820eb13d6576914f92afb97c06",
+    "reason": "Reviewed upstream synthetic regression fixture or explicit URL-parser example; not a real credential."
+  },
+  {
+    "file": "src/shared/terminalPaths.ts",
+    "rule": "url-credentials",
+    "sha256": "fbddae166ead16d1dd67736b19403ab1ac0095e344f663573848af911a7ce273",
+    "reason": "Reviewed upstream synthetic regression fixture or explicit URL-parser example; not a real credential."
+  },
+  {
+    "file": "test/research-sources.test.cjs",
+    "rule": "url-credentials",
+    "sha256": "fbddae166ead16d1dd67736b19403ab1ac0095e344f663573848af911a7ce273",
+    "reason": "Reviewed upstream synthetic regression fixture or explicit URL-parser example; not a real credential."
+  }
+]

@@ -1,0 +1,52 @@
+appId: local.xingshu.desktop
+productName: 星枢
+copyright: Copyright © 2026 Chaitanya Giri and contributors
+publish: null
+
+directories:
+  output: dist
+  buildResources: build
+
+files:
+  - out/**
+  - package.json
+  - "!**/*.{map,ts,tsx}"
+
+extraResources:
+  - from: LICENSE
+    to: licenses/Munder-Difflin-LICENSE.txt
+  - from: NOTICE.md
+    to: licenses/XingShu-NOTICE.txt
+  - from: src/renderer/src/vendor/nextchat/LICENSE
+    to: licenses/NextChat-LICENSE.txt
+  - from: src/renderer/src/vendor/nextchat/NOTICE.md
+    to: licenses/NextChat-NOTICE.txt
+  - from: src/renderer/src/vendor/chibi-pets/LICENSE.txt
+    to: licenses/Chibi-Pets-CC-BY-NC-4.0.txt
+  - from: src/renderer/src/vendor/chibi-pets/NOTICE.txt
+    to: licenses/Chibi-Pets-NOTICE.txt
+  - from: src/renderer/src/vendor/chibi-pets/ATTRIBUTION.txt
+    to: licenses/Chibi-Pets-ATTRIBUTION.txt
+  - from: src/renderer/src/assets/fonts/LICENSE.txt
+    to: licenses/Fonts-OFL.txt
+  - from: resources/md-slack-reply.cjs
+    to: md-slack-reply.cjs
+  - from: resources/kg.cjs
+    to: kg.cjs
+  - from: src/main/kg-core.cjs
+    to: kg-core.cjs
+  - from: resources/skills
+    to: skills
+
+asarUnpack:
+  - "**/node_modules/node-pty/**"
+  - "**/node_modules/better-sqlite3/**"
+
+# Native modules are rebuilt during npm ci. Do not silently build another copy.
+npmRebuild: false
+
+win:
+  icon: build/icon.ico
+  target:
+    - target: dir
+      arch: [x64]

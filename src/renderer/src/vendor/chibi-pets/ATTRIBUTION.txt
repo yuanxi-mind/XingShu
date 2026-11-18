@@ -1,0 +1,17 @@
+Q 版角色美术 / Chibi character artwork
+Author: fywdy
+Source: https://github.com/fywdy/chatgpt-chibi-pets
+License: Creative Commons Attribution-NonCommercial 4.0 International
+https://creativecommons.org/licenses/by-nc/4.0/
+
+Characters used: ChatGPT white dragon, Claude orange scholar, DeepSeek whale maid,
+Gemini star cat, Grok gothic. Community fan art; not official provider characters.
+This project is not affiliated with or endorsed by the model providers.
+
+Modifications: extracted the first idle-animation frame, cropped transparent
+margins and made portrait crops. Full-body idle frames are selectable decorations.
+No model provider, model capability or business role is implied by a character.
+
+The image assets are limited to noncommercial use. The upstream MIT code license
+does not license the artwork for commercial use. See the accompanying complete
+CC BY-NC 4.0 license and upstream NOTICE.
