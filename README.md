@@ -159,7 +159,6 @@ React 界面 → Electron preload / 项目级 IPC → API 协作管理器
 - [验证与截图复现](docs/VALIDATION.md)：测试命令、实际检查和演示数据说明。
 - [贡献方式](CONTRIBUTING.md) · [隐私与发布检查](SECURITY.md) · [1.0.0 发布说明](CHANGELOG.md)。
 
-**当前限制：**不能保证零幻觉、论文新颖性或实验提分。记忆检索为中英词法检索，尚未使用向量数据库；扫描 PDF 暂无 OCR；科研模式不开放任意 shell；多 seed 比较不等于统计显著性检验；远程训练须自行准备 Linux / Python / Docker / 固定 digest 镜像和数据集，真实服务器兼容性需另行验证。不要把离线模拟验收当成真实付费模型或训练验收。
 
 ## 自研技能：桌面产品设计评审
 
@@ -171,8 +170,6 @@ React 界面 → Electron preload / 项目级 IPC → API 协作管理器
 
 **代码与美术分别许可，不能把整个发行包理解为可自由商用的 MIT。**
 
-- 星枢新增的代码及桌面设计评审技能按 [MIT](LICENSE) 提供。
 - [Munder Difflin](https://github.com/HarnessMD/munder-difflin) 的部分基础代码（如 SQLite 状态和保留的 CLI 模块）仍在本仓库，遵循 MIT，保留 Chaitanya Giri 署名。详见 [第三方来源](NOTICE.md)。
-- NextChat 适配界面资源：MIT，保留其 [许可](src/renderer/src/vendor/nextchat/LICENSE) 与 [说明](src/renderer/src/vendor/nextchat/NOTICE.md)。
 - Q 版角色：来自 [fywdy/chatgpt-chibi-pets](https://github.com/fywdy/chatgpt-chibi-pets)，**CC BY-NC 4.0，限非商业使用**，见 [署名](src/renderer/src/vendor/chibi-pets/ATTRIBUTION.txt) 和 [完整许可](src/renderer/src/vendor/chibi-pets/LICENSE.txt)。README 截图中包含这些角色，相关美术权利不因截图而改变。
 - 字体：见 [字体许可](src/renderer/src/assets/fonts/LICENSE.txt)。模型和产品名称归各权利人所有；本项目没有获得模型厂商背书。
