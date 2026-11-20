@@ -170,6 +170,6 @@ React 界面 → Electron preload / 项目级 IPC → API 协作管理器
 
 **代码与美术分别许可，不能把整个发行包理解为可自由商用的 MIT。**
 
-- [Munder Difflin](https://github.com/HarnessMD/munder-difflin) 的部分基础代码（如 SQLite 状态和保留的 CLI 模块）仍在本仓库，遵循 MIT，保留 Chaitanya Giri 署名。详见 [第三方来源](NOTICE.md)。
+- 借鉴的[Munder Difflin](https://github.com/HarnessMD/munder-difflin) 的部分基础代码（如 SQLite 状态和保留的 CLI 模块）仍在本仓库未修改，保留 Chaitanya Giri 署名。详见 [第三方来源](NOTICE.md)。
 - Q 版角色：来自 [fywdy/chatgpt-chibi-pets](https://github.com/fywdy/chatgpt-chibi-pets)，**CC BY-NC 4.0，限非商业使用**，见 [署名](src/renderer/src/vendor/chibi-pets/ATTRIBUTION.txt) 和 [完整许可](src/renderer/src/vendor/chibi-pets/LICENSE.txt)。README 截图中包含这些角色，相关美术权利不因截图而改变。
 - 字体：见 [字体许可](src/renderer/src/assets/fonts/LICENSE.txt)。模型和产品名称归各权利人所有；本项目没有获得模型厂商背书。
